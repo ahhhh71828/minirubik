@@ -1,9 +1,11 @@
-/* RV32I build of the A0 search for Ripes (GCC reference for stage 4).
+/* RV32I build of the A0 or A3 search for Ripes (GCC reference for
+ * stage 4).
  *
  * The input state is fixed at compile time, as the assignment requires:
- *   -DSTATE='"21345671111111"'  [-DEXPECT=11]
- * The program parses it, solves it with the same ida.h the host gates
- * checked, prints the moves, and validates the result itself: the path must
+ *   -DSTATE='"21345671111111"'  [-DEXPECT=11]  [-DPERIMETER for A3]
+ * The program parses it, solves it with the same core the host gates
+ * checked (ida.h, plus ida_perimeter.h for A3), prints the moves, and
+ * validates the result itself: the path must
  * reach solved through the transition tables, and if EXPECT is given its
  * length must match. It prints OK or FAIL.
  *
@@ -14,6 +16,13 @@
 
 #include "../tables.h"
 #include "../ida.h"
+#ifdef PERIMETER
+#include "../perimeter.h"
+#include "../ida_perimeter.h"
+#define SOLVE perimeter_solve
+#else
+#define SOLVE ida_solve
+#endif
 
 #ifndef STATE
 #define STATE "21345671111111"
@@ -81,7 +90,7 @@ int main(void)
     }
     uint8_t moves[MAX_DEPTH];
     ida_stats_t stats = {0, 0};
-    uint8_t length = ida_solve(p, o, moves, &stats);
+    uint8_t length = SOLVE(p, o, moves, &stats);
     if (length == NOT_FOUND) {
         print_string("FAIL: no solution\n");
         return 1;

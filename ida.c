@@ -6,6 +6,11 @@
  *                    ./verify --solutions for an independent H3 check)
  *   ./ida --hardest  print every distance-11 state with its search cost,
  *                    most expensive first (input list for target sweeps)
+ *   ./ida --perimeter [--gates | --stream]
+ *                    A3 (ida_perimeter.h with perimeter.h): audit the packed
+ *                    entries (H2/H4), H1, and optimal paths on the perimeter,
+ *                    the reference, and every distance-11 state; --gates
+ *                    checks the whole domain; --stream feeds ./verify
  *
  * The distance oracle here is a breadth-first search over the full state
  * graph, built from the factored transitions, independent of the pattern
@@ -19,7 +24,9 @@
 #include <time.h>
 
 #include "tables.h"
+#include "perimeter.h"
 #include "ida.h"
+#include "ida_perimeter.h"
 
 static void fail(const char *message, uint32_t rank)
 {
@@ -230,8 +237,153 @@ static void hardest(const uint8_t *distance)
     }
 }
 
+/* A3: the shared core in ida_perimeter.h, run against the generated
+ * perimeter.h. The full distance array here only audits the table and
+ * checks results; the search never sees it.
+ */
+static void perimeter_audit(const uint8_t *distance)
+{
+    uint32_t expected = 0, previous = 0;
+    for (uint32_t rank = 0; rank < STATES; ++rank)
+        expected += distance[rank] <= PERIMETER_RADIUS;
+    if (PERIMETER_SIZE != expected)
+        fail("perimeter cardinality", PERIMETER_SIZE);
+    for (uint32_t i = 0; i < PERIMETER_SIZE; ++i) {
+        uint32_t word = perimeter[i], rank = word >> 7;
+        uint8_t d = (uint8_t) (word & 7), move = (uint8_t) ((word >> 3) & 15);
+        if (rank >= STATES || (i && rank <= previous) || d != distance[rank] ||
+            d > PERIMETER_RADIUS || perimeter_find(rank) != word)
+            fail("packed entry audit", rank);
+        if (!d) {
+            if (rank || move != 9)
+                fail("solved perimeter entry", rank);
+        } else {
+            /* Unpacked reference: the first move, in move_names order, that
+             * descends, computed with the upstream state code. */
+            state_t state;
+            unrank_state(rank, &state);
+            uint8_t reference;
+            for (reference = 0; reference < MOVES; ++reference) {
+                state_t next = apply_move(state, reference);
+                if (distance[rank_state(&next)] == d - 1)
+                    break;
+            }
+            if (reference == MOVES || move != reference)
+                fail("packed move differs from unpacked reference", rank);
+        }
+        previous = rank;
+    }
+    printf("A3 H2/H4 PASS: %d sorted packed entries, complete radius %d; "
+           "ranks, distances, moves, and accessor match the oracle\n",
+           PERIMETER_SIZE, PERIMETER_RADIUS);
+}
+
+static void perimeter_h1(const uint8_t *distance)
+{
+    uint64_t h_sum = 0;
+    uint32_t exact = 0;
+    for (uint32_t rank = 0; rank < STATES; ++rank) {
+        uint32_t entry;
+        uint8_t h = perimeter_h((uint16_t) (rank / ORIENTATIONS),
+                                (uint16_t) (rank % ORIENTATIONS), &entry);
+        if ((entry != PERIMETER_MISS) != (distance[rank] <= PERIMETER_RADIUS))
+            fail("perimeter membership differs from oracle", rank);
+        if (h > distance[rank])
+            fail("perimeter heuristic overestimates", rank);
+        h_sum += h;
+        exact += h == distance[rank];
+    }
+    printf("A3 H1 PASS: h <= d for all %d states; mean h %.3f; "
+           "h == d for %" PRIu32 " states\n",
+           STATES, (double) h_sum / STATES, exact);
+}
+
+/* H3 over the whole domain (full) or over the perimeter, the reference
+ * vector, and every distance-11 state (quick), with an A0 comparison on the
+ * distance-11 states.
+ */
+static void perimeter_h3(const uint8_t *distance, int full)
+{
+    uint32_t checked = 0, hard = 0, worst = 0, worst_rank = 0, base_worst = 0;
+    uint64_t sum = 0, base_sum = 0;
+    double start = seconds();
+    for (uint32_t rank = 0; rank < STATES; ++rank) {
+        if (!full && distance[rank] > PERIMETER_RADIUS &&
+            distance[rank] != MAX_DEPTH && rank != 729U * 720U)
+            continue; /* 729 * 720 is the rank of 21345671111111 */
+        uint16_t p = (uint16_t) (rank / ORIENTATIONS);
+        uint16_t o = (uint16_t) (rank % ORIENTATIONS);
+        uint8_t moves[MAX_DEPTH];
+        ida_stats_t stats = {0, 0};
+        uint8_t length = perimeter_solve(p, o, moves, &stats);
+        if (length != distance[rank] || !path_solves(rank, moves, length))
+            fail("A3 path not optimal or not solved", rank);
+        ++checked;
+        if (distance[rank] != MAX_DEPTH)
+            continue;
+        ida_stats_t base = {0, 0};
+        ida_solve(p, o, moves, &base);
+        ++hard;
+        sum += stats.generated;
+        base_sum += base.generated;
+        if (stats.generated > worst) {
+            worst = stats.generated;
+            worst_rank = rank;
+        }
+        if (base.generated > base_worst)
+            base_worst = base.generated;
+    }
+    if (hard != 2644 || (full && checked != STATES))
+        fail("A3 coverage incomplete", checked);
+    char name[15];
+    state_string(worst_rank, name);
+    printf("A3 %s PASS: %" PRIu32 " optimal paths (%.1f s)\n",
+           full ? "H3 full-domain" : "path subset", checked,
+           seconds() - start);
+    printf("D11 generated: A0 mean %.1f worst %" PRIu32 "; A3 mean %.1f worst "
+           "%" PRIu32 " (%s); host counts, not target instructions\n",
+           (double) base_sum / hard, base_worst, (double) sum / hard, worst,
+           name);
+}
+
+static void perimeter_stream(void)
+{
+    for (uint32_t rank = 0; rank < STATES; ++rank) {
+        uint8_t moves[MAX_DEPTH];
+        ida_stats_t stats = {0, 0};
+        char name[15];
+        uint8_t length = perimeter_solve((uint16_t) (rank / ORIENTATIONS),
+                                         (uint16_t) (rank % ORIENTATIONS),
+                                         moves, &stats);
+        state_string(rank, name);
+        printf("%s|", name);
+        for (uint8_t i = 0; length != NOT_FOUND && i < length; ++i)
+            printf("%s%s", i ? " " : "", move_names[moves[i]]);
+        putchar('\n');
+    }
+}
+
 int main(int argc, char **argv)
 {
+    if (argc >= 2 && !strcmp(argv[1], "--perimeter")) {
+        int gates = argc == 3 && !strcmp(argv[2], "--gates");
+        if (argc == 3 && !strcmp(argv[2], "--stream")) {
+            perimeter_stream();
+            return output_failed();
+        }
+        if (argc != 2 && !gates) {
+            fprintf(stderr, "usage: %s --perimeter [--gates | --stream]\n",
+                    argv[0]);
+            return 2;
+        }
+        uint8_t *distance = make_distance();
+        gate_h2();
+        perimeter_audit(distance);
+        perimeter_h1(distance);
+        perimeter_h3(distance, gates);
+        free(distance);
+        return output_failed();
+    }
     if (argc == 2 && !strcmp(argv[1], "--gates")) {
         uint8_t *distance = make_distance();
         gate_h2();
@@ -253,7 +405,8 @@ int main(int argc, char **argv)
     state_t state;
     if (argc != 2 || !parse_state(argv[1], &state)) {
         fprintf(stderr,
-                "usage: %s PPPPPPPOOOOOOO | --gates | --stream | --hardest\n",
+                "usage: %s PPPPPPPOOOOOOO | --gates | --stream | --hardest | "
+                "--perimeter [--gates | --stream]\n",
                 argc > 0 && argv[0] ? argv[0] : "ida");
         return 2;
     }

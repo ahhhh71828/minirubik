@@ -31,7 +31,11 @@ gen_tables: gen_tables.c solver.c
 tables.h: gen_tables
 	./gen_tables > $@
 
-ida: ida.c ida.h tables.h solver.c
+PERIMETER_RADIUS ?= 5
+perimeter.h: gen_tables
+	./gen_tables --perimeter $(PERIMETER_RADIUS) > $@
+
+ida: ida.c ida.h ida_perimeter.h tables.h perimeter.h solver.c
 	$(CC) $(CFLAGS) $< -o $@
 
 check: solver mini $(VECTORS)
@@ -106,4 +110,4 @@ endif
 	$(CLANG_FORMAT) -i $(C_SOURCES)
 
 clean:
-	$(RM) solver mini verify gen_tables tables.h ida
+	$(RM) solver mini verify gen_tables tables.h perimeter.h ida

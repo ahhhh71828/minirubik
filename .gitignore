@@ -6,5 +6,6 @@ mini
 /verify
 /gen_tables
 /tables.h
+/perimeter.h
 /ida
 /rv32/build/
