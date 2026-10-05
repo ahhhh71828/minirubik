@@ -22,6 +22,18 @@ solver: solver.c
 mini: mini.c
 	$(CC) $(CFLAGS) $< -o $@
 
+verify: verify.c solver.c
+	$(CC) $(CFLAGS) $< -o $@
+
+gen_tables: gen_tables.c solver.c
+	$(CC) $(CFLAGS) $< -o $@
+
+tables.h: gen_tables
+	./gen_tables > $@
+
+ida: ida.c ida.h tables.h solver.c
+	$(CC) $(CFLAGS) $< -o $@
+
 check: solver mini $(VECTORS)
 	./solver --self-test
 	@expected=$$(mktemp); actual=$$(mktemp); \
@@ -94,4 +106,4 @@ endif
 	$(CLANG_FORMAT) -i $(C_SOURCES)
 
 clean:
-	$(RM) solver mini
+	$(RM) solver mini verify gen_tables tables.h ida

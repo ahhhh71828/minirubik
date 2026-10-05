@@ -3,3 +3,8 @@
 *.swp
 solver
 mini
+/verify
+/gen_tables
+/tables.h
+/ida
+/rv32/build/
