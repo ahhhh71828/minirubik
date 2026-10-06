@@ -208,8 +208,8 @@ A small trace. The scramble `R B` gives `25346712313322`, with $p = 1113$, $o = 
 | :--- | :--- | :--- |
 | H1 | $h(s) \le d(s)$ for all 3,674,160 states | pass; $h = d$ for 17,108 states |
 | H2 | every entry filled, solved entries 0, maxima 7 and 6, transitions in range | pass |
-| H3 | the search returns a path of exactly $d(s)$ moves that reaches solved, for every state | pass, 164 s |
-| H3, independent | `./ida --stream \| ./verify --solutions`, checked against an oracle derived from the upstream BFS | pass: 3,674,160 distinct states, 3 min 30 s |
+| H3 | the search returns a path of exactly $d(s)$ moves that reaches solved, for every state | pass, 163.5 s |
+| H3, independent | `./ida --stream \| ./verify --solutions`, checked against an oracle derived from the upstream BFS | pass: 3,674,160 distinct states, 2 min 47 s |
 | H4 | packed accessor | not applicable, no packing |
 
 Search cost by distance, where *generated* counts children produced, each costing one heuristic evaluation:
@@ -284,7 +284,7 @@ Mean $h$ rises from 5.144 to 6.005, and the worst distance-11 query drops from 6
 | Variant | Change | Worst generated | GCC worst | GCC mean | Per child, worst |
 | :--- | :--- | ---: | ---: | ---: | ---: |
 | A0 | §3 | 639,792 | 38,437,391 | 12,420,971 | 60 |
-| A3T | perimeter as sorted 32-bit entries, binary search; a hit appends stored moves | 57,157 | 9,580,186 | 3,254,618 | 168 |
+| A3T | perimeter as sorted 32-bit entries, binary search; a hit appends stored moves | 57,157 | 10,347,119 | 3,515,002 | 181 |
 | A3D | as A3T, distances only; IDA* searches on to solved | 57,168 | 10,377,121 | 3,527,482 | 182 |
 | A3B | as A3D, entries bucketed by permutation rank | 57,168 | 4,319,765 | 1,487,587 | 76 |
 | A3F | as A3B, lookup only with at most $r$ moves left | 57,168 | 4,464,307 | 1,532,112 | 78 |
@@ -292,9 +292,9 @@ Mean $h$ rises from 5.144 to 6.005, and the worst distance-11 query drops from 6
 
 *Per child* is worst-case retired instructions divided by worst-case generated children. All six pass H1, H2/H4, and the full-domain H3 on the host. All six also pass the in-program check on all 2,644 distance-11 states on the target, with every printed path confirmed by the independent verifier. The worst state is `54721631111111` throughout.
 
-**A0 → A3T.** Eleven times fewer children but only four times fewer instructions. Each child now costs 168 instructions instead of 60, and the difference is the lookup: a binary search over 12,224 entries takes about 14 probes, each an address computation, a load, a shift, and a branch. Fewer children had moved the bottleneck into the table.
+**A0 → A3T.** Eleven times fewer children but only 3.7 times fewer instructions. Each child now costs 181 instructions instead of 60, and the difference is the lookup: a binary search over 12,224 entries takes about 14 probes, each an address computation, a load, a shift, and a branch. Fewer children had moved the bottleneck into the table.
 
-**A3T → A3D.** Without stored moves, a child inside the perimeter with $g + d \le$ bound has exactly one kind of child that survives, one step closer, so the pass walks straight down to solved. The host count rises by only 11 children, as expected. The target cost rose by 8% instead. I have not traced that difference to its source in GCC's output; I report it as measured rather than explain it.
+**A3T → A3D.** Without stored moves, a child inside the perimeter with $g + d \le$ bound has exactly one kind of child that survives, one step closer, so the pass walks straight down to solved. The host count rises by only 11 children (0.02%), and the target cost by 0.3%: dropping the stored tail costs almost nothing. An earlier build of A3T, before the variants shared one lookup interface, measured 8% faster than A3D. The algorithm was the same, so that gap came from how the old interface compiled, not from search work, and I report the current build.
 
 **A3D → A3B.** Bucketing replaces the binary search:
 * `perimeter_offset[p]` (5,041 halfwords) marks where the bucket of permutation rank $p$ starts in `perimeter_entry`.
@@ -303,7 +303,7 @@ Mean $h$ rises from 5.144 to 6.005, and the worst distance-11 query drops from 6
 
 The perimeter shrinks from 48,896 to 34,530 bytes, and the cost per child falls from 182 to 76. This is the step that turned the perimeter into a net win of 8.9× over A0 on the worst state.
 
-**A3B → A3F, a negative result.** With $m$ moves left below a child, a lookup can only matter if $m \le r$: the perimeter raises $h$ to at most $r + 1$, so with more moves left the child descends whatever the lookup says. Skipping those lookups leaves the search tree unchanged, and the host streams of A3B and A3F match byte for byte over all 3,674,160 states. On the worst state, lookups fall from 40,214 to 33,551. Yet the compiled code got 3.3% slower: computing `bound - (depth + 1)` for every one of 57,168 children costs more than 6,663 bucket scans save. Stage 4 returns to this.
+**A3B → A3F, a negative result.** With $m$ moves left below a child, a lookup can only matter if $m \le r$: the perimeter raises $h$ to at most $r + 1$, so with more moves left the child descends whatever the lookup says. Skipping those lookups leaves the search tree unchanged, and the host streams of A3B and A3F match byte for byte over all 3,674,160 states. Yet the compiled code got 3.3% slower: the skip spares only the lookups made with more than $r$ moves left, while computing `bound - (depth + 1)` is added to every one of the 57,168 children. Stage 4 returns to this.
 
 **A3B → A3BX.** Every rank is stored pre-scaled by 2, the byte offset of its halfword entry, so indexing a halfword table needs no shift. The pattern databases are widened to halfwords so the same scaled rank indexes them. This costs 5,769 bytes and saves about 6% on the target. A3BX is the compiled C I compare the assembly against: it is the fastest compiled variant, and it uses the same tables and layout as my final assembly.
 
