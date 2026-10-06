@@ -10,7 +10,7 @@ Contributed by ahhhh71828 · Fork: [ahhhh71828/minirubik](https://github.com/ahh
 | Retired instructions | `--iret` on the Ripes build above, same input, renderer compiled out |
 | Code size | bytes of linked `.text`, renderer compiled out (defined now, reported from stage 4) |
 
-> Status: this revision covers the state-space model, stage 1, and stage 2. Stages 3–4, the LED matrix, and the pipeline walkthrough follow in later revisions.
+> Status: this revision covers the state-space model and stages 1 to 4, including the LED matrix renderer. The pipeline walkthrough and the final cross-model checks follow in the next revision.
 
 ## 1. The State Space
 
@@ -257,6 +257,196 @@ The state the host ranked most expensive is also the most expensive on the targe
 ### 3.8 What this leads to
 
 The compiled design already meets both graded thresholds, so stages 3 and 4 are about cost rather than feasibility. Dividing retired instructions by generated children gives about 60 instructions per child for the compiled C, on both the reference vector and the worst state. With roughly 640,000 children on the worst query, every instruction removed from the per-child path saves about 0.64 million instructions. Stage 3 breaks that per-child cost down and removes what the target cannot do cheaply; stage 4 rewrites the loop by hand and measures each step against this reference.
+
+## 4. Stage 3: Making the Search Cheap on the Target
+
+Stage 2 ended with about 60 retired instructions per generated child. Stage 3 asks where the rest of the budget can go: fewer children, or cheaper ones. I changed one factor at a time, kept every variant buildable, and measured each on all 2,644 distance-11 states with the compiled C (GCC 16.2.0, `-O2 -march=rv32i -mabi=ilp32`). All variants share [`ida.h`](https://github.com/ahhhh71828/minirubik/blob/main/ida.h) and [`ida_perimeter.h`](https://github.com/ahhhh71828/minirubik/blob/main/ida_perimeter.h) with the host gates.
+
+### 4.1 Fewer children: a perimeter around the goal
+
+The A0 heuristic averages 5.144 against a true mean distance of 8.756. Most of the search is spent in the last levels of each pass, where the bound is nearly used up and the heuristic is too weak to cut. A perimeter closes that gap from the other end.
+
+Every state within radius $r = 5$ of solved, 12,224 of them, is stored with its exact distance. The search then evaluates
+
+$$h(s) = \begin{cases} h_0(s) & h_0(s) > r \\ d(s) & s \text{ in the perimeter} \\ r + 1 & \text{otherwise.} \end{cases}$$
+
+where $h_0$ is A0's heuristic. It never overestimates:
+* $h_0 > r$ already rules out membership, and $h_0$ is admissible.
+* Inside the perimeter the value is exact.
+* Outside it, every state within $r$ moves is listed, so the true distance is at least $r + 1$.
+
+The table holds distances only, and it is the precomputed heuristic table the assignment's precomputation rule allows ("transition tables and any heuristic tables may be generated on the host"). It covers 0.33% of the state space, not the complete table the rule forbids. Every move of every solution, including the last steps through the perimeter, is found by the search on the target. This is my reading of the rule; I flag it rather than assume it.
+
+Mean $h$ rises from 5.144 to 6.005, and the worst distance-11 query drops from 639,792 generated children to 57,157, a factor of 11.
+
+### 4.2 Variants, one change each
+
+| Variant | Change | Worst generated | GCC worst | GCC mean | Per child, worst |
+| :--- | :--- | ---: | ---: | ---: | ---: |
+| A0 | §3 | 639,792 | 38,437,391 | 12,420,971 | 60 |
+| A3T | perimeter as sorted 32-bit entries, binary search; a hit appends stored moves | 57,157 | 9,580,186 | 3,254,618 | 168 |
+| A3D | as A3T, distances only; IDA* searches on to solved | 57,168 | 10,377,121 | 3,527,482 | 182 |
+| A3B | as A3D, entries bucketed by permutation rank | 57,168 | 4,319,765 | 1,487,587 | 76 |
+| A3F | as A3B, lookup only with at most $r$ moves left | 57,168 | 4,464,307 | 1,532,112 | 78 |
+| A3BX | as A3B, tables pre-scaled to byte offsets | 57,168 | **4,068,454** | **1,398,474** | 71 |
+
+*Per child* is worst-case retired instructions divided by worst-case generated children. All six pass H1, H2/H4, and the full-domain H3 on the host. All six also pass the in-program check on all 2,644 distance-11 states on the target, with every printed path confirmed by the independent verifier. The worst state is `54721631111111` throughout.
+
+**A0 → A3T.** Eleven times fewer children but only four times fewer instructions. Each child now costs 168 instructions instead of 60, and the difference is the lookup: a binary search over 12,224 entries takes about 14 probes, each an address computation, a load, a shift, and a branch. Fewer children had moved the bottleneck into the table.
+
+**A3T → A3D.** Without stored moves, a child inside the perimeter with $g + d \le$ bound has exactly one kind of child that survives, one step closer, so the pass walks straight down to solved. The host count rises by only 11 children, as expected. The target cost rose by 8% instead. I have not traced that difference to its source in GCC's output; I report it as measured rather than explain it.
+
+**A3D → A3B.** Bucketing replaces the binary search:
+* `perimeter_offset[p]` (5,041 halfwords) marks where the bucket of permutation rank $p$ starts in `perimeter_entry`.
+* Each entry is a 16-bit `ori << 3 | distance`, ascending.
+* Only 3,751 permutations have any perimeter state. A non-empty bucket holds 3.26 entries on average and 11 at most, and a scan stops at the first ori not below the target.
+
+The perimeter shrinks from 48,896 to 34,530 bytes, and the cost per child falls from 182 to 76. This is the step that turned the perimeter into a net win of 8.9× over A0 on the worst state.
+
+**A3B → A3F, a negative result.** With $m$ moves left below a child, a lookup can only matter if $m \le r$: the perimeter raises $h$ to at most $r + 1$, so with more moves left the child descends whatever the lookup says. Skipping those lookups leaves the search tree unchanged, and the host streams of A3B and A3F match byte for byte over all 3,674,160 states. On the worst state, lookups fall from 40,214 to 33,551. Yet the compiled code got 3.3% slower: computing `bound - (depth + 1)` for every one of 57,168 children costs more than 6,663 bucket scans save. Stage 4 returns to this.
+
+**A3B → A3BX.** Every rank is stored pre-scaled by 2, the byte offset of its halfword entry, so indexing a halfword table needs no shift. The pattern databases are widened to halfwords so the same scaled rank indexes them. This costs 5,769 bytes and saves about 6% on the target. A3BX is the compiled C I compare the assembly against: it is the fastest compiled variant, and it uses the same tables and layout as my final assembly.
+
+### 4.3 Memory
+
+| Structure | A0 | A3BX |
+| :--- | ---: | ---: |
+| `perm_turn`, `ori_turn` | 34,614 | 34,614 |
+| `perm_pdb`, `ori_pdb` | 5,769 | 11,538 |
+| `perimeter_offset`, `perimeter_entry` | — | 34,530 |
+| Linked `.rodata` | 40,560 | 80,860 |
+| Share of the 128 KiB budget | 30.9% | 61.7% |
+
+## 5. Stage 4: Hand-Written RV32I
+
+### 5.1 Build and measurement conventions
+
+[`rv32/solver.S`](https://github.com/ahhhh71828/minirubik/blob/main/rv32/solver.S) is written by hand against the RV32I base ISA. Ripes' built-in assembler does not support `.if` or `.rodata`, so the assemble-time switches are C-preprocessor `#if`, resolved by `riscv64-elf-gcc -E -P -x assembler-with-cpp`. Ripes then assembles the result itself (`-t asm`); [`rv32/asm.sh`](https://github.com/ahhhh71828/minirubik/blob/main/rv32/asm.sh) wraps both steps.
+
+The source uses only the subset both Ripes and GNU as accept, so the same preprocessed text also links with GNU as (`-Wl,--no-relax`) to measure section sizes. Both builds retire exactly the same number of instructions on every input I compared, so their pseudo-instruction expansions agree. The tables come from [`gen_tables.c`](https://github.com/ahhhh71828/minirubik/blob/main/gen_tables.c) as `.half` data. All halfword tables come first in `.data`, so no alignment directive is needed.
+
+* **Retired instructions:** `--iret` on `RV32_ISS`, renderer compiled out, same input.
+* **Code size:** linked `.text` bytes with the renderer compiled out.
+
+### 5.2 Design: the current depth lives in registers
+
+| Register | Role |
+| :--- | :--- |
+| `s0`–`s5` | table bases |
+| `s6` | the bound |
+| `s7`, `s8` | current and depth-0 frame |
+| `s9`, `s10` | the rows of the face being tried |
+| `s11` | the row stride |
+| `a0`, `a1` | face and turn count |
+| `a2`, `a3` | the latest child |
+| `a4`, `a5` | the current node |
+| `a6` | moves left below the child |
+| `a7` | the face that led here |
+| `gp`, `tp` | the root |
+
+A 32-byte frame per depth, addressed by stepping `s7` by 32, holds only what backtracking needs: the two row pointers, the node, the child that was descended into, the face, and the turn count. It is written only on a descent. The solution is never stored separately: on success it is read back from each frame's face and turn count.
+
+The child loop is three table loads and a maximum:
+
+```asm
+child:
+    add  t0, s9, a2             # a2 holds perm rank * 2
+    lhu  a2, 0(t0)
+    add  t1, s10, a3
+    lhu  a3, 0(t1)
+    add  t0, s2, a2
+    lhu  t0, 0(t0)              # perm_pdb
+    add  t1, s3, a3
+    lhu  t1, 0(t1)              # ori_pdb
+    bgeu t0, t1, child_h
+    mv   t0, t1
+```
+
+`a6` replaces the bound test: `bltu a6, t0, next` prunes when $h$ exceeds the moves left. It is decremented on descent and incremented on backtrack, never recomputed. Changing face adds the row stride to `s9` and `s10`, so there is no multiply anywhere in the search.
+
+### 5.3 Iterative refinement
+
+| Version | Change | Worst | Mean | `21345671111111` | `.text` |
+| :--- | :--- | ---: | ---: | ---: | ---: |
+| v0 (eager) | A3B's algorithm by hand; lookup whenever $h_0 \le r$ | 2,466,956 | | 893,520 | 1,148 |
+| v1 | look up only with at most $r$ moves left | 2,312,468 | 798,701 | 838,622 | 1,148 |
+| v2a | v1 with the lookup inlined | 2,154,801 | 745,162 | 781,691 | 1,200 |
+| v2b | v2a with byte-offset tables | **1,939,773** | **672,088** | **703,904** | **1,160** |
+
+Every version is reproducible from the final source through switches:
+* v1 is `-DINDEX_TABLES -DCALL_LOOKUP`.
+* v2a is `-DINDEX_TABLES`.
+* v0 adds `-DEAGER_LOOKUP` to v1.
+
+v1, v2a, and v2b each passed the in-program check on all 2,644 distance-11 states, and the independent verifier confirmed all 2,644 printed paths for each.
+
+**v0 → v1, the same shortcut that failed in C.** In assembly, the moves left are already in `a6`, so the test costs two instructions (`li`, `bgeu`) and saves 6.3% on the worst state. In C, the same test lost 3.3%, because the count had to be rebuilt from `bound` and `depth` for every child. The algorithm is identical; what differs is that I can keep a value in a register for the whole search, which GCC did not.
+
+**v1 → v2a, inline lookup.** Beyond saving `jal` and `ret`, inlining lets one comparison handle every outcome. The lookup only runs with at most $r = 5$ moves left. An absent state would score $r + 1 = 6$, and scanning past the target ori leaves `entry - (o << 3)` at 8 or more. Both exceed the moves left, so the single `bltu a6, t0, next` that rejects a too-distant hit also rejects both misses.
+
+**v2a → v2b, byte offsets.** Pre-scaled ranks remove two `slli` per child and three per lookup, at the cost of 5,769 bytes of wider pattern databases. Static data is 81,216 bytes, 62% of the budget.
+
+### 5.4 Against the compiled C
+
+| | GCC A3BX | asm v2b | asm ÷ GCC |
+| :--- | ---: | ---: | ---: |
+| Worst distance-11 state | 4,068,454 | 1,939,773 | 0.477 |
+| Mean over 2,644 states | 1,398,474 | 672,088 | 0.481 |
+| `21345671111111` | 1,478,449 | 703,904 | 0.476 |
+| Per-state ratio, range | | | 0.471 to 0.511 |
+| States where the assembly is not faster | | | 0 |
+| `.text` | 1,744 bytes | 1,160 bytes | 0.665 |
+
+The comparison is fair in algorithm and data: A3BX uses the same tables and the same byte-offset layout. A3BX looks up eagerly because that is faster for the compiled C; the lazy variant A3FX measured 4,294,714 on the worst state. The worst query uses 3.9% of the $5 \times 10^7$ budget.
+
+The assembly wins in four places:
+* The current depth stays in registers, while the compiled C writes each child to its frame arrays.
+* The moves-left counter replaces a per-child recomputation.
+* The lookup is skipped when it cannot prune and is inlined when it can.
+* Row pointers step by addition instead of two-dimensional indexing.
+
+The one place the assembly does not win is the solved state: 542 against 475 retired instructions. Parsing and ranking run once per query, and I wrote them as plain loops. The rank's varying radix is applied by repeated addition. That costs a few dozen instructions on every query, under 0.01% of a hard one.
+
+As a fallback that needs no perimeter, the same source built with `-DHEURISTIC_A0` solves the worst state in 14,694,457 instructions and the reference in 5,374,645, with 1,024 bytes of `.text`. That is 38% of the compiled A0.
+
+### 5.5 Tests inside the program
+
+The input is the 14-character string inlined at assembly time. After solving, the program does three things:
+1. It prints the moves.
+2. It replays them through the transition tables from the root, requiring the solved state.
+3. If an expected length is given at assembly time, it compares the length with it.
+
+It then prints `OK length n` or `FAIL length n`.
+
+| Test | Length | Retired (`RV32_ISS`) |
+| :--- | ---: | ---: |
+| `12345671111111` (solved) | 0 | 542 |
+| `25346712313322` (`R B`) | 2 | 866 |
+| `62345713133111` | 8 | 5,969 |
+| `21345671111111` (distance 11) | 11 | 703,904 |
+| `54721631111111` (hardest for every variant) | 11 | 1,939,773 |
+
+> Pending for the next revision: the same tests on a pipelined model (T7), and the pipeline walkthrough.
+
+## 6. LED Matrix Rendering
+
+With `RENDER=1` the same source adds a renderer for the 35×25 LED matrix. The CLI build, the one measured above, defines `RENDER=0`, which removes the renderer's code, data, delay loops, and every reference to the peripheral symbols. The two builds differ only in the renderer.
+
+The renderer keeps its own eight-corner arrays, a cubie and a twist per position with the fixed corner at position 0. The search's two ranks suit table lookup, but drawing needs to know which cubie sits where. The flow is:
+1. Before playback, it decodes the input and draws the initial state.
+2. For each move in the solver's `moves[]`, it applies the move to these arrays and redraws.
+
+A quarter turn writes into separate next-state arrays and copies them back, because a cycle updated in place would read values it had already moved. Every frame comes from the move list the search produced.
+
+The layout is the unfolded net with U above F, the row L F R B, and D below F:
+* Each facelet is 4×3 pixels.
+* Each face is 2×2 facelets, so 8×6 pixels.
+* One dark pixel separates neighbouring faces.
+* The bounding box is 35×20, placed from row 2.
+
+A sticker's colour is looked up from the cubie's three home faces, rotated by its twist: `basis[cubie][(slot + twist) mod 3]`. Since the sum is at most 4, the modulo is one conditional subtract. Pixels are addressed row-major from the peripheral symbols, as `LED_MATRIX_0_BASE + 4 * (y * LED_MATRIX_0_WIDTH + x)`. The clear loop runs over `LED_MATRIX_0_WIDTH` and `LED_MATRIX_0_HEIGHT`, so no address is hard-coded. The six colours are white, red, green, yellow, orange, and blue for U, R, F, D, L, and B.
+
+At the end, the renderer requires its own corner arrays to be solved, a second check independent of the rank replay. On the GUI build of `21345671111111`, Ripes plays the initial state and each of the 11 moves, ends on six uniform faces, and prints `OK length 11`.
 
 ## AI Usage Disclosure
 
