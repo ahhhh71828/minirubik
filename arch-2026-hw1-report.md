@@ -260,7 +260,7 @@ The compiled design already meets both graded thresholds, so stages 3 and 4 are 
 
 ## 4. Stage 3: Making the Search Cheap on the Target
 
-Stage 2 ended with about 60 retired instructions per generated child. Stage 3 asks where the rest of the budget can go: fewer children, or cheaper ones. I changed one factor at a time, kept every variant buildable, and measured each on all 2,644 distance-11 states with the compiled C (GCC 16.2.0, `-O2 -march=rv32i -mabi=ilp32`). All variants share [`ida.h`](https://github.com/ahhhh71828/minirubik/blob/main/ida.h) and [`ida_perimeter.h`](https://github.com/ahhhh71828/minirubik/blob/main/ida_perimeter.h) with the host gates.
+Stage 2 ended with about 60 retired instructions per generated child. Stage 3 asks where the rest of the budget can go: fewer children, or cheaper ones. Each variant below changes one factor and stays buildable, and I measured each on all 2,644 distance-11 states with the compiled C (GCC 16.2.0, `-O2 -march=rv32i -mabi=ilp32`). All variants share [`ida.h`](https://github.com/ahhhh71828/minirubik/blob/main/ida.h) and [`ida_perimeter.h`](https://github.com/ahhhh71828/minirubik/blob/main/ida_perimeter.h) with the host gates.
 
 ### 4.1 Fewer children: a perimeter around the goal
 
@@ -321,7 +321,7 @@ The perimeter shrinks from 48,896 to 34,530 bytes, and the cost per child falls 
 
 ### 5.1 Build and measurement conventions
 
-[`rv32/solver.S`](https://github.com/ahhhh71828/minirubik/blob/main/rv32/solver.S) is written by hand against the RV32I base ISA. Ripes' built-in assembler does not support `.if` or `.rodata`, so the assemble-time switches are C-preprocessor `#if`, resolved by `riscv64-elf-gcc -E -P -x assembler-with-cpp`. Ripes then assembles the result itself (`-t asm`); [`rv32/asm.sh`](https://github.com/ahhhh71828/minirubik/blob/main/rv32/asm.sh) wraps both steps.
+[`rv32/solver.S`](https://github.com/ahhhh71828/minirubik/blob/main/rv32/solver.S) is assembly written directly against the RV32I base ISA, not compiler output. Ripes' built-in assembler does not support `.if` or `.rodata`, so the assemble-time switches are C-preprocessor `#if`, resolved by `riscv64-elf-gcc -E -P -x assembler-with-cpp`. Ripes then assembles the result itself (`-t asm`); [`rv32/asm.sh`](https://github.com/ahhhh71828/minirubik/blob/main/rv32/asm.sh) wraps both steps.
 
 The source uses only the subset both Ripes and GNU as accept, so the same preprocessed text also links with GNU as (`-Wl,--no-relax`) to measure section sizes. Both builds retire exactly the same number of instructions on every input I compared, so their pseudo-instruction expansions agree. The tables come from [`gen_tables.c`](https://github.com/ahhhh71828/minirubik/blob/main/gen_tables.c) as `.half` data. All halfword tables come first in `.data`, so no alignment directive is needed.
 
@@ -344,9 +344,9 @@ The source uses only the subset both Ripes and GNU as accept, so the same prepro
 | `a7` | the face that led here |
 | `gp`, `tp` | the root |
 
-A 32-byte frame per depth, addressed by stepping `s7` by 32, holds only what backtracking needs: the two row pointers, the node, the child that was descended into, the face, and the turn count. It is written only on a descent. The solution is never stored separately: on success it is read back from each frame's face and turn count.
+A 32-byte frame per depth, addressed by stepping `s7` by 32, holds only what backtracking needs: the two row pointers, the node, the child that was descended into, the face, and the turn count. It is written only on a descent. The search never records the path separately: on success it is copied out of the frames' face and turn counts into `moves[]`, which the output, the self-check, and the renderer read.
 
-The child loop is three table loads and a maximum:
+The child loop is four table loads and a maximum:
 
 ```asm
 child:
@@ -380,7 +380,7 @@ Every version is reproducible from the final source through switches:
 
 v1, v2a, and v2b each passed the in-program check on all 2,644 distance-11 states, and the independent verifier confirmed all 2,644 printed paths for each.
 
-**v0 → v1, the same shortcut that failed in C.** In assembly, the moves left are already in `a6`, so the test costs two instructions (`li`, `bgeu`) and saves 6.3% on the worst state. In C, the same test lost 3.3%, because the count had to be rebuilt from `bound` and `depth` for every child. The algorithm is identical; what differs is that I can keep a value in a register for the whole search, which GCC did not.
+**v0 → v1, the same shortcut that failed in C.** In assembly, the moves left are already in `a6`, so the test costs two instructions (`li`, `bgeu`) and saves 6.3% on the worst state. In C, the same test lost 3.3%, because the count had to be rebuilt from `bound` and `depth` for every child. The algorithm is identical; what differs is that hand-written code can keep the count in a register for the whole search, which GCC did not.
 
 **v1 → v2a, inline lookup.** Beyond saving `jal` and `ret`, inlining lets one comparison handle every outcome. The lookup only runs with at most $r = 5$ moves left. An absent state would score $r + 1 = 6$, and scanning past the target ori leaves `entry - (o << 3)` at 8 or more. Both exceed the moves left, so the single `bltu a6, t0, next` that rejects a too-distant hit also rejects both misses.
 
@@ -405,7 +405,7 @@ The assembly wins in four places:
 * The lookup is skipped when it cannot prune and is inlined when it can.
 * Row pointers step by addition instead of two-dimensional indexing.
 
-The one place the assembly does not win is the solved state: 542 against 475 retired instructions. Parsing and ranking run once per query, and I wrote them as plain loops. The rank's varying radix is applied by repeated addition. That costs a few dozen instructions on every query, under 0.01% of a hard one.
+The one place the assembly does not win is the solved state: 542 against 475 retired instructions. Parsing and ranking run once per query, and they are written as plain loops. The rank's varying radix is applied by repeated addition. That costs a few dozen instructions on every query, under 0.01% of a hard one.
 
 As a fallback that needs no perimeter, the same source built with `-DHEURISTIC_A0` solves the worst state in 14,694,457 instructions and the reference in 5,374,645, with 1,024 bytes of `.text`. That is 38% of the compiled A0.
 
@@ -426,7 +426,17 @@ It then prints `OK length n` or `FAIL length n`.
 | `21345671111111` (distance 11) | 11 | 703,904 |
 | `54721631111111` (hardest for every variant) | 11 | 1,939,773 |
 
-> Pending for the next revision: the same tests on a pipelined model (T7), and the pipeline walkthrough.
+The same three tests on the five-stage pipeline model `RV32_5S` print the same moves and `OK`:
+
+| Test | `RV32_ISS` | `RV32_5S` |
+| :--- | ---: | ---: |
+| `12345671111111` | 542 | 541 |
+| `25346712313322` | 866 | 865 |
+| `21345671111111` | 703,904 | 703,903 |
+
+The pipelined count is one lower in every case because the final exit `ecall` is still in flight when the simulation stops; it never reaches write-back.
+
+> Pending for the next revision: the pipeline walkthrough.
 
 ## 6. LED Matrix Rendering
 
@@ -450,8 +460,22 @@ At the end, the renderer requires its own corner arrays to be solved, a second c
 
 ## AI Usage Disclosure
 
-Draft, to be completed at submission (AI Guidelines §4.1). Tools: Claude Code and Codex.
+> Partial disclosure, in progress. The items below are complete and accurate for what they cover; the remaining components will be added in a later revision, before submission.
 
-* Explanation of the assignment, the baseline code, and background on heuristic search; a literature survey of candidate techniques. Design choices for stages 2–4 are recorded in later revisions together with which AI suggestions were accepted, rejected, or modified.
-* The stage 1 harnesses in `stage1/` were written by Claude. Every number in §2.3 was produced by running them myself.
-* The English text of this revision was drafted by Claude from my measurements and our discussion, then reviewed by me.
+Tools: Claude Code (Claude) and Codex.
+
+* **Understanding the material.** Explanations of the assignment text, the baseline `solver.c` and `report.md`, and background on heuristic search (IDA*, pattern databases, admissibility), including Chinese study notes that walk through code line by line.
+* **Literature search.** Locating and summarizing papers and open-source solvers on pattern databases, perimeter search, move pruning, and transposition tables, and flagging which ideas do not apply to the R/B/D cube.
+* **Toolchain and environment.**
+  * Verifying the pinned Ripes build and its CLI.
+  * Finding that Ripes' built-in assembler rejects `.if`, `.rodata`, and arithmetic immediates, and setting up the C-preprocessor workaround.
+  * Checking that the Ripes and GNU-as builds retire identical counts.
+  * Troubleshooting HackMD's GitHub sync.
+* **Verification tooling.**
+  * `verify.c`, an independent shortest-path checker built on the upstream BFS.
+  * The host gate driver's checks (H1, H2/H4, H3).
+  * The scripts that automate builds and runs: `stage1/run.sh`, `rv32/run.sh`, `rv32/asm.sh`, and `rv32/sweep.sh`.
+
+  Every measurement reported in this note was produced by my own runs of these tools.
+* **Debugging.** Diagnosing failures during development, such as an off-by-one in face skipping found by a sweep, and shell quoting problems in the measurement scripts.
+* **Writing.** Refining the English of this note.
