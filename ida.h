@@ -20,6 +20,21 @@
 
 enum { MAX_DEPTH = 11, NOT_FOUND = 0xFF };
 
+/* Table access. By default ranks index the tables. With -DBYTE_TABLES
+ * (target only, tables_bytes.h) every rank is pre-scaled by 2, the byte
+ * offset of its halfword entry, and the pattern databases are halfwords,
+ * the layout the hand-written solver uses; the search code is unchanged.
+ */
+#ifdef BYTE_TABLES
+#define AT16(table, offset) \
+    (*(const uint16_t *) ((const uint8_t *) (table) + (offset)))
+#define TURN(table, face, rank) AT16((table)[face], rank)
+#define PDB(table, rank) AT16(table, rank)
+#else
+#define TURN(table, face, rank) ((table)[face][rank])
+#define PDB(table, rank) ((table)[rank])
+#endif
+
 typedef struct {
     uint32_t expanded;  /* nodes whose children were generated, incl. roots */
     uint32_t generated; /* children produced, one heuristic lookup each */
@@ -27,7 +42,7 @@ typedef struct {
 
 static inline uint8_t ida_h(uint16_t p, uint16_t o)
 {
-    uint8_t a = perm_pdb[p], b = ori_pdb[o];
+    uint8_t a = (uint8_t) PDB(perm_pdb, p), b = (uint8_t) PDB(ori_pdb, o);
     return a > b ? a : b;
 }
 
@@ -67,8 +82,8 @@ static uint8_t ida_pass(uint16_t p0, uint16_t o0, uint8_t bound,
         }
         {
             uint8_t f = face[depth];
-            uint16_t p = perm_turn[f][child_p[depth]];
-            uint16_t o = ori_turn[f][child_o[depth]];
+            uint16_t p = TURN(perm_turn, f, child_p[depth]);
+            uint16_t o = TURN(ori_turn, f, child_o[depth]);
             child_p[depth] = p;
             child_o[depth] = o;
             ++stats->generated;

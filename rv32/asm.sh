@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Build the hand-written solver (rv32/solver.S) for one input and run it.
-#   [HEURISTIC=A0] [RENDER=1] [RENDER_DELAY=500000] [SIZE=1] rv32/asm.sh STATE [EXPECTED_LENGTH] [PROC]
+#   [HEURISTIC=A0] [DEFS='-DNAME ...'] [RENDER=1] [RENDER_DELAY=500000] [SIZE=1]
+#   rv32/asm.sh STATE [EXPECTED_LENGTH] [PROC]
+# DEFS passes extra assemble-time switches, e.g. DEFS=-DEAGER_LOOKUP.
 #
 # The C preprocessor resolves the assemble-time switches (Ripes has no .if),
 # then Ripes' own assembler runs the result (-t asm): this is the measured
@@ -16,12 +18,12 @@ state=$1 expect=${2:-} proc=${3:-RV32_ISS}
 render=${RENDER:-0}
 tag=asm${HEURISTIC:+-$HEURISTIC}
 
-make -s -C "$here/.." rv32/build/tables.inc
+make -s -C "$here/.." rv32/build/tables.inc rv32/build/tables_bytes.inc
 src="$here/build/$tag-$state.s"
 [ "$render" != 0 ] && src="$here/build/$tag-$state-gui.s"
 "$CC" -E -P -x assembler-with-cpp -I"$here/build" \
     -DSTATE="\"$state\"" ${expect:+-DEXPECT=$expect} -DRENDER="$render" ${RENDER_DELAY:+-DRENDER_DELAY=$RENDER_DELAY} \
-    ${HEURISTIC:+-DHEURISTIC_$HEURISTIC} "$here/solver.S" > "$src"
+    ${HEURISTIC:+-DHEURISTIC_$HEURISTIC} ${DEFS:-} "$here/solver.S" > "$src"
 
 if [ "$render" != 0 ]; then
     echo "GUI source: $src"

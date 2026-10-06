@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run the RV32I program on Ripes for every distance-11 state.
-#   [VARIANT=A0|A3T|A3D|A3B|ASM] rv32/sweep.sh [JOBS]  > results.tsv
+#   [VARIANT=A0|A3T|A3D|A3B|A3F|A3BX|A3FX|ASM] rv32/sweep.sh [JOBS]  > results.tsv
 # VARIANT=ASM runs the hand-written rv32/solver.S (rv32/asm.sh); the others
 # run the compiled C (rv32/run.sh).
 # Each output line: STATE, retired instructions, OK|FAIL, and the printed
@@ -12,7 +12,7 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 jobs=${1:-8}
 
-make -s -C "$here/.." ida tables.h perimeter.h rv32/build/tables.inc >&2
+make -s -C "$here/.." ida tables.h tables_bytes.h perimeter.h rv32/build/tables.inc rv32/build/tables_bytes.inc >&2
 
 one() {
     local state=$1 out iret status moves

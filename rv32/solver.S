@@ -1,9 +1,13 @@
-/* minirubik A3B solver, hand-written RV32I assembly (asm v1).
+/* minirubik A3B solver, hand-written RV32I assembly (asm v2b).
  *
  * Search: IDA* over (permutation rank, orientation rank). Heuristic:
  * h0 = max(perm_pdb[p], ori_pdb[o]); when h0 <= PERIMETER_RADIUS the
  * bucketed perimeter gives the exact distance, or PERIMETER_RADIUS + 1 if
  * the state is absent. -DHEURISTIC_A0 drops the perimeter (A0 fallback).
+ * -DEAGER_LOOKUP looks up whenever h0 is within the radius, as the C A3B
+ * does, instead of only when few moves are left (measurement switch).
+ * -DCALL_LOOKUP keeps the asm v1 subroutine call for the in-search lookup.
+ * -DINDEX_TABLES keeps plain ranks in the tables (asm v1, v2a).
  *
  * Build: preprocess with the C preprocessor, then assemble with Ripes
  * (-t asm) or GNU as. The source uses only what both assemblers accept;
@@ -30,6 +34,18 @@
 #ifndef STATE
 #define STATE "21345671111111"
 #endif
+
+/* Table layout. Default (asm v2b): every rank is kept pre-scaled by 2, the
+ * byte offset of its halfword entry, so a lookup is add + load with no
+ * shift; the pattern databases are widened to halfwords so the same scaled
+ * rank indexes them. -DINDEX_TABLES restores plain ranks (asm v1, v2a). */
+#ifdef INDEX_TABLES
+#define LOAD_PDB lbu
+#define ORI_KEY_SHIFT 3             /* entry key ori << 3 from ori */
+#else
+#define LOAD_PDB lhu
+#define ORI_KEY_SHIFT 2             /* entry key ori << 3 from ori * 2 */
+#endif
 #ifndef RENDER
 #define RENDER 0
 #endif
@@ -43,7 +59,11 @@ frame_sentinel:
     .zero 15
 frames:
     .zero 384                   /* 12 frames, depth 0 to 11 */
+#ifdef INDEX_TABLES
 #include "tables.inc"           /* halfword tables, then byte tables */
+#else
+#include "tables_bytes.inc"     /* every table halfword, ranks scaled by 2 */
+#endif
 input:
     .string STATE
 digits:
@@ -184,8 +204,13 @@ rank_scale:
     addi t0, t0, 1
     addi t2, t2, -1
     bnez t2, rank_digit
+#ifdef INDEX_TABLES
     mv   gp, a2                 # root permutation rank
     mv   tp, a3                 # root orientation rank
+#else
+    slli gp, a2, 1              # root permutation rank, scaled by 2
+    slli tp, a3, 1              # root orientation rank, scaled by 2
+#endif
 
 /* ---- Tables and the root bound ----------------------------------------- */
     la   s0, perm_turn
@@ -198,9 +223,9 @@ rank_scale:
     li   s11, PERM_FACE_BYTES
     li   a0, 0                  # path length if the root is solved
     add  t0, s2, gp
-    lbu  t0, 0(t0)
+    LOAD_PDB t0, 0(t0)
     add  t1, s3, tp
-    lbu  t1, 0(t1)
+    LOAD_PDB t1, 0(t1)
     bgeu t0, t1, root_h
     mv   t0, t1
 root_h:
@@ -235,28 +260,72 @@ pass:
  * previous child (or to the node, after a face change).
  */
 child:
+#ifdef INDEX_TABLES
     slli t0, a2, 1
     add  t0, s9, t0
     lhu  a2, 0(t0)              # perm rank after the turn
     slli t1, a3, 1
     add  t1, s10, t1
     lhu  a3, 0(t1)              # ori rank after the turn
+#else
+    add  t0, s9, a2
+    lhu  a2, 0(t0)              # perm rank after the turn (scaled)
+    add  t1, s10, a3
+    lhu  a3, 0(t1)              # ori rank after the turn (scaled)
+#endif
     add  t0, s2, a2
-    lbu  t0, 0(t0)
+    LOAD_PDB t0, 0(t0)
     add  t1, s3, a3
-    lbu  t1, 0(t1)
+    LOAD_PDB t1, 0(t1)
     bgeu t0, t1, child_h
     mv   t0, t1                 # t0 = h0 = max of the two lookups
 child_h:
     beqz t0, found              # h0 == 0 only at solved
     bltu a6, t0, next           # h0 > moves left: prune
 #ifndef HEURISTIC_A0
+#ifdef EAGER_LOOKUP
+    /* As the C A3B: look up whenever h0 is within the radius. */
+    li   t1, PERIMETER_RADIUS
+    bltu t1, t0, descend        # h0 above the radius: not in the perimeter
+#else
     /* The perimeter can only raise h to at most radius + 1. With that many
      * moves left it cannot prune, so look up only when fewer are left. */
     li   t1, PERIMETER_OUTSIDE
     bgeu a6, t1, descend
+#endif
+#if defined(EAGER_LOOKUP) || defined(CALL_LOOKUP)
     jal  ra, perimeter_lookup
     bltu a6, t0, next           # exact distance, or radius + 1: prune
+#else
+    /* asm v2: the bucket scan inline. Here at most PERIMETER_RADIUS moves
+     * are left, so an absent state (h = radius + 1) always prunes, and a
+     * larger ori gives entry - (o << 3) >= 8, which prunes the same way:
+     * one comparison covers hit, miss, and overshoot. */
+#ifdef INDEX_TABLES
+    slli t2, a2, 1
+    add  t2, s4, t2
+    lhu  t3, 0(t2)
+    lhu  t4, 2(t2)
+    slli t3, t3, 1
+    add  t3, s5, t3             # first entry of the bucket
+    slli t4, t4, 1
+    add  t4, s5, t4             # one past the last
+#else
+    add  t2, s4, a2
+    lhu  t3, 0(t2)              # byte offsets into perimeter_entry
+    lhu  t4, 2(t2)
+    add  t3, s5, t3             # first entry of the bucket
+    add  t4, s5, t4             # one past the last
+#endif
+    slli t5, a3, ORI_KEY_SHIFT
+child_scan:
+    bgeu t3, t4, next           # bucket exhausted: absent, prune
+    lhu  t6, 0(t3)
+    addi t3, t3, 2
+    bltu t6, t5, child_scan     # ori below o: keep scanning
+    sub  t0, t6, t5             # distance on a match, >= 8 past it
+    bltu a6, t0, next           # more than the moves left: prune
+#endif
 #endif
 
 /* Save this depth, then make the child the node of the next depth. */
@@ -394,12 +463,19 @@ replay_face:
     addi t2, t2, ORI_FACE_BYTES
     j    replay_face
 replay_turn:
+#ifdef INDEX_TABLES
     slli t3, a2, 1
     add  t3, t1, t3
     lhu  a2, 0(t3)
     slli t3, a3, 1
     add  t3, t2, t3
     lhu  a3, 0(t3)
+#else
+    add  t3, t1, a2
+    lhu  a2, 0(t3)
+    add  t3, t2, a3
+    lhu  a3, 0(t3)
+#endif
     addi t0, t0, -1
     bgez t0, replay_turn
 #if RENDER
@@ -464,6 +540,7 @@ exit:
  * [ori:10][distance:3] ascending, so entry >= (o << 3) means ori >= o.
  */
 perimeter_lookup:
+#ifdef INDEX_TABLES
     slli t2, a2, 1
     add  t2, s4, t2
     lhu  t3, 0(t2)
@@ -472,7 +549,14 @@ perimeter_lookup:
     add  t3, s5, t3             # first entry of the bucket
     slli t4, t4, 1
     add  t4, s5, t4             # one past the last
-    slli t5, a3, 3
+#else
+    add  t2, s4, a2
+    lhu  t3, 0(t2)              # byte offsets into perimeter_entry
+    lhu  t4, 2(t2)
+    add  t3, s5, t3             # first entry of the bucket
+    add  t4, s5, t4             # one past the last
+#endif
+    slli t5, a3, ORI_KEY_SHIFT
 lookup_scan:
     bgeu t3, t4, lookup_miss
     lhu  t6, 0(t3)

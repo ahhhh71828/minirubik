@@ -12,6 +12,14 @@
  *                            IDA* searches on to solved
  *   A3B  -DPERIMETER_BUCKET  per-permutation buckets, linear scan;
  *                            distances only, IDA* searches on to solved
+ *   -DBYTE_TABLES (with A3B or A3F, target only): the byte-offset layout
+ *        of tables_bytes.h, as in the hand-written solver.
+ *   A3F  A3B plus -DPERIMETER_LAZY: inside the search, look a child up only
+ *        when its A0 bound h0 and the moves left are both within the
+ *        radius. The perimeter raises h to at most PERIMETER_RADIUS + 1,
+ *        so with more moves left than the radius no lookup could prune and
+ *        the child descends either way; the search tree is unchanged.
+ *        The root bound and the H1 check still use the full perimeter_h.
  *
  * Heuristic: if A0's lower bound h exceeds the radius, the state cannot be
  * in the perimeter and h stands. Otherwise look it up. Inside, the stored
@@ -27,6 +35,12 @@
 #if defined(PERIMETER_TAIL) && defined(PERIMETER_BUCKET)
 #error "the stored tail needs the sorted layout, which holds the moves"
 #endif
+#if defined(PERIMETER_TAIL) && defined(PERIMETER_LAZY)
+#error "the stored tail needs every in-bound perimeter hit"
+#endif
+#if defined(BYTE_TABLES) && !defined(PERIMETER_BUCKET)
+#error "the byte-offset layout exists only for the bucketed perimeter"
+#endif
 
 #define PERIMETER_MISS 0xFFFFFFFFu
 
@@ -34,6 +48,24 @@
 /* Scan the bucket of permutation rank p, ori ascending. Returns the entry
  * [ori:10][distance:3] or MISS.
  */
+#ifdef BYTE_TABLES
+/* Byte-offset layout: p and o are scaled by 2, the offsets are byte
+ * offsets, and an entry's key ori << 3 equals o << 2.
+ */
+static uint32_t perimeter_find(uint16_t p, uint16_t o)
+{
+    const uint8_t *base = (const uint8_t *) perimeter_entry;
+    const uint8_t *q = base + AT16(perimeter_offset, p);
+    const uint8_t *end = base + AT16(perimeter_offset, p + 2U);
+    uint16_t key = (uint16_t) (o << 2);
+    for (; q < end; q += 2) {
+        uint16_t entry = *(const uint16_t *) q;
+        if (entry >= key)
+            return entry - key < 8U ? entry : PERIMETER_MISS;
+    }
+    return PERIMETER_MISS;
+}
+#else
 static uint32_t perimeter_find(uint16_t p, uint16_t o)
 {
     for (uint16_t i = perimeter_offset[p]; i < perimeter_offset[p + 1]; ++i) {
@@ -43,6 +75,7 @@ static uint32_t perimeter_find(uint16_t p, uint16_t o)
     }
     return PERIMETER_MISS;
 }
+#endif
 #else
 /* Binary search over entries sorted by rank p * 729 + o. Returns the entry
  * [rank:22][move:4][distance:3] or MISS.
@@ -95,8 +128,8 @@ static uint8_t perimeter_tail(uint16_t p, uint16_t o, uint32_t entry,
             ++face;
         }
         for (uint8_t q = 0; q <= power; ++q) {
-            p = perm_turn[face][p];
-            o = ori_turn[face][o];
+            p = TURN(perm_turn, face, p);
+            o = TURN(ori_turn, face, o);
         }
         entry = perimeter_find(p, o);
         if (entry == PERIMETER_MISS || (entry & 7U) != d - 1U)
@@ -138,13 +171,24 @@ static uint8_t perimeter_pass(uint16_t p0, uint16_t o0, uint8_t bound,
         }
         {
             uint8_t f = face[depth];
-            uint16_t p = perm_turn[f][child_p[depth]];
-            uint16_t o = ori_turn[f][child_o[depth]];
+            uint16_t p = TURN(perm_turn, f, child_p[depth]);
+            uint16_t o = TURN(ori_turn, f, child_o[depth]);
             child_p[depth] = p;
             child_o[depth] = o;
             ++stats->generated;
             uint32_t entry;
+#ifdef PERIMETER_LAZY
+            /* depth + 1 <= bound: a node was entered only with h >= 1 left */
+            unsigned left = bound - (depth + 1U);
+            uint8_t h = ida_h(p, o);
+            if (h <= left && left <= PERIMETER_RADIUS) {
+                entry = perimeter_find(p, o);
+                h = entry == PERIMETER_MISS ? (uint8_t) (PERIMETER_RADIUS + 1)
+                                            : (uint8_t) (entry & 7U);
+            }
+#else
             uint8_t h = perimeter_h(p, o, &entry);
+#endif
             if (depth + 1U + h <= bound) {
                 moves[depth] = (uint8_t) (f * 3U + turns[depth]);
 #ifdef PERIMETER_TAIL

@@ -7,7 +7,9 @@ mini
 /gen_tables
 /tables.h
 /perimeter.h
+/tables_bytes.h
 /ida
 /ida_a3d
 /ida_a3b
+/ida_a3f
 /rv32/build/

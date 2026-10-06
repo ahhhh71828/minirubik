@@ -3,6 +3,7 @@
  *
  * The input state is fixed at compile time, as the assignment requires:
  *   -DSTATE='"21345671111111"'  [-DEXPECT=11]  [-DPERIMETER for A3]
+ *   [-DBYTE_TABLES: tables_bytes.h, ranks pre-scaled by 2]
  * The program parses it, solves it with the same core the host gates
  * checked (ida.h, plus ida_perimeter.h for A3), prints the moves, and
  * validates the result itself: the path must
@@ -14,10 +15,16 @@
  */
 #include <stdint.h>
 
+#ifdef BYTE_TABLES
+#include "../tables_bytes.h" /* all tables, ranks scaled by 2 */
+#else
 #include "../tables.h"
+#endif
 #include "../ida.h"
 #ifdef PERIMETER
+#ifndef BYTE_TABLES
 #include "../perimeter.h"
+#endif
 #include "../ida_perimeter.h"
 #define SOLVE perimeter_solve
 #else
@@ -88,6 +95,10 @@ int main(void)
         print_string("FAIL: invalid state\n");
         return 1;
     }
+#ifdef BYTE_TABLES
+    p = (uint16_t) (p << 1); /* ranks travel as byte offsets */
+    o = (uint16_t) (o << 1);
+#endif
     uint8_t moves[MAX_DEPTH];
     ida_stats_t stats = {0, 0};
     uint8_t length = SOLVE(p, o, moves, &stats);
@@ -110,8 +121,8 @@ int main(void)
             ++face;
         }
         for (uint8_t q = 0; q <= power; ++q) {
-            p = perm_turn[face][p];
-            o = ori_turn[face][o];
+            p = TURN(perm_turn, face, p);
+            o = TURN(ori_turn, face, o);
         }
     }
     int ok = p == 0 && o == 0;

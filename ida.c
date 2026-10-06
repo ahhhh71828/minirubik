@@ -11,7 +11,7 @@
  *                    entries (H2/H4), H1, and optimal paths on the perimeter,
  *                    the reference, and every distance-11 state; --gates
  *                    checks the whole domain; --stream feeds ./verify.
- *                    Variant by binary: ida (A3T), ida_a3d, ida_a3b
+ *                    Variant by binary: ida (A3T), ida_a3d, ida_a3b, ida_a3f
  *
  * The distance oracle here is a breadth-first search over the full state
  * graph, built from the factored transitions, independent of the pattern
@@ -244,6 +244,8 @@ static void hardest(const uint8_t *distance)
  */
 #if defined(PERIMETER_TAIL)
 #define A3_NAME "A3T"
+#elif defined(PERIMETER_LAZY)
+#define A3_NAME "A3F"
 #elif defined(PERIMETER_BUCKET)
 #define A3_NAME "A3B"
 #else
