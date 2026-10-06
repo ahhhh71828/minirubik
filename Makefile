@@ -35,8 +35,22 @@ PERIMETER_RADIUS ?= 5
 perimeter.h: gen_tables
 	./gen_tables --perimeter $(PERIMETER_RADIUS) > $@
 
-ida: ida.c ida.h ida_perimeter.h tables.h perimeter.h solver.c
+rv32/build/tables.inc: gen_tables
+	mkdir -p rv32/build
+	./gen_tables --asm $(PERIMETER_RADIUS) > $@
+
+IDA_DEPS := ida.c ida.h ida_perimeter.h tables.h perimeter.h solver.c
+
+# A0 modes, plus the A3 variants: stored tail (ida), distance-only with
+# sorted entries (ida_a3d), distance-only with buckets (ida_a3b).
+ida: $(IDA_DEPS)
+	$(CC) $(CFLAGS) -DPERIMETER_TAIL $< -o $@
+
+ida_a3d: $(IDA_DEPS)
 	$(CC) $(CFLAGS) $< -o $@
+
+ida_a3b: $(IDA_DEPS)
+	$(CC) $(CFLAGS) -DPERIMETER_BUCKET $< -o $@
 
 check: solver mini $(VECTORS)
 	./solver --self-test
@@ -110,4 +124,4 @@ endif
 	$(CLANG_FORMAT) -i $(C_SOURCES)
 
 clean:
-	$(RM) solver mini verify gen_tables tables.h perimeter.h ida
+	$(RM) solver mini verify gen_tables tables.h perimeter.h ida ida_a3d ida_a3b

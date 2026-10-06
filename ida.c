@@ -10,7 +10,8 @@
  *                    A3 (ida_perimeter.h with perimeter.h): audit the packed
  *                    entries (H2/H4), H1, and optimal paths on the perimeter,
  *                    the reference, and every distance-11 state; --gates
- *                    checks the whole domain; --stream feeds ./verify
+ *                    checks the whole domain; --stream feeds ./verify.
+ *                    Variant by binary: ida (A3T), ida_a3d, ida_a3b
  *
  * The distance oracle here is a breadth-first search over the full state
  * graph, built from the factored transitions, independent of the pattern
@@ -241,6 +242,17 @@ static void hardest(const uint8_t *distance)
  * perimeter.h. The full distance array here only audits the table and
  * checks results; the search never sees it.
  */
+#if defined(PERIMETER_TAIL)
+#define A3_NAME "A3T"
+#elif defined(PERIMETER_BUCKET)
+#define A3_NAME "A3B"
+#else
+#define A3_NAME "A3D"
+#endif
+
+/* Audit both layouts in perimeter.h against the oracle, whichever variant
+ * this binary searches with.
+ */
 static void perimeter_audit(const uint8_t *distance)
 {
     uint32_t expected = 0, previous = 0;
@@ -248,12 +260,13 @@ static void perimeter_audit(const uint8_t *distance)
         expected += distance[rank] <= PERIMETER_RADIUS;
     if (PERIMETER_SIZE != expected)
         fail("perimeter cardinality", PERIMETER_SIZE);
+    /* Sorted layout: ranks ascending, exact distance, first descending move. */
     for (uint32_t i = 0; i < PERIMETER_SIZE; ++i) {
         uint32_t word = perimeter[i], rank = word >> 7;
         uint8_t d = (uint8_t) (word & 7), move = (uint8_t) ((word >> 3) & 15);
         if (rank >= STATES || (i && rank <= previous) || d != distance[rank] ||
-            d > PERIMETER_RADIUS || perimeter_find(rank) != word)
-            fail("packed entry audit", rank);
+            d > PERIMETER_RADIUS)
+            fail("sorted entry audit", rank);
         if (!d) {
             if (rank || move != 9)
                 fail("solved perimeter entry", rank);
@@ -273,9 +286,30 @@ static void perimeter_audit(const uint8_t *distance)
         }
         previous = rank;
     }
-    printf("A3 H2/H4 PASS: %d sorted packed entries, complete radius %d; "
-           "ranks, distances, moves, and accessor match the oracle\n",
-           PERIMETER_SIZE, PERIMETER_RADIUS);
+    /* Bucket layout: offsets cover every entry, each bucket holds exactly
+     * the perimeter states of its permutation, ori ascending. */
+    if (perimeter_offset[0] != 0 ||
+        perimeter_offset[PERMUTATIONS] != PERIMETER_SIZE)
+        fail("bucket offsets do not cover the entries", 0);
+    for (uint32_t p = 0; p < PERMUTATIONS; ++p) {
+        uint32_t members = 0;
+        for (uint32_t o = 0; o < ORIENTATIONS; ++o)
+            members += distance[p * ORIENTATIONS + o] <= PERIMETER_RADIUS;
+        if (perimeter_offset[p + 1] < perimeter_offset[p] ||
+            perimeter_offset[p + 1] - perimeter_offset[p] != members)
+            fail("bucket size", p);
+        for (uint32_t i = perimeter_offset[p]; i < perimeter_offset[p + 1];
+             ++i) {
+            uint32_t o = perimeter_entry[i] >> 3, d = perimeter_entry[i] & 7;
+            if (o >= ORIENTATIONS || d != distance[p * ORIENTATIONS + o] ||
+                (i > perimeter_offset[p] && o <= perimeter_entry[i - 1] >> 3))
+                fail("bucket entry audit", p * ORIENTATIONS + o);
+        }
+    }
+    printf("%s H2/H4 PASS: %d entries, complete radius %d; sorted layout "
+           "(ranks, distances, moves) and bucket layout (offsets, ori, "
+           "distances) match the oracle\n",
+           A3_NAME, PERIMETER_SIZE, PERIMETER_RADIUS);
 }
 
 static void perimeter_h1(const uint8_t *distance)
@@ -286,14 +320,15 @@ static void perimeter_h1(const uint8_t *distance)
         uint32_t entry;
         uint8_t h = perimeter_h((uint16_t) (rank / ORIENTATIONS),
                                 (uint16_t) (rank % ORIENTATIONS), &entry);
-        if ((entry != PERIMETER_MISS) != (distance[rank] <= PERIMETER_RADIUS))
-            fail("perimeter membership differs from oracle", rank);
+        if ((entry != PERIMETER_MISS) != (distance[rank] <= PERIMETER_RADIUS) ||
+            (entry != PERIMETER_MISS && (entry & 7) != distance[rank]))
+            fail("perimeter accessor differs from oracle", rank);
         if (h > distance[rank])
             fail("perimeter heuristic overestimates", rank);
         h_sum += h;
         exact += h == distance[rank];
     }
-    printf("A3 H1 PASS: h <= d for all %d states; mean h %.3f; "
+    printf(A3_NAME " H1 PASS: h <= d for all %d states; mean h %.3f; "
            "h == d for %" PRIu32 " states\n",
            STATES, (double) h_sum / STATES, exact);
 }
@@ -317,7 +352,7 @@ static void perimeter_h3(const uint8_t *distance, int full)
         ida_stats_t stats = {0, 0};
         uint8_t length = perimeter_solve(p, o, moves, &stats);
         if (length != distance[rank] || !path_solves(rank, moves, length))
-            fail("A3 path not optimal or not solved", rank);
+            fail(A3_NAME " path not optimal or not solved", rank);
         ++checked;
         if (distance[rank] != MAX_DEPTH)
             continue;
@@ -334,13 +369,13 @@ static void perimeter_h3(const uint8_t *distance, int full)
             base_worst = base.generated;
     }
     if (hard != 2644 || (full && checked != STATES))
-        fail("A3 coverage incomplete", checked);
+        fail(A3_NAME " coverage incomplete", checked);
     char name[15];
     state_string(worst_rank, name);
-    printf("A3 %s PASS: %" PRIu32 " optimal paths (%.1f s)\n",
+    printf(A3_NAME " %s PASS: %" PRIu32 " optimal paths (%.1f s)\n",
            full ? "H3 full-domain" : "path subset", checked,
            seconds() - start);
-    printf("D11 generated: A0 mean %.1f worst %" PRIu32 "; A3 mean %.1f worst "
+    printf("D11 generated: A0 mean %.1f worst %" PRIu32 "; " A3_NAME " mean %.1f worst "
            "%" PRIu32 " (%s); host counts, not target instructions\n",
            (double) base_sum / hard, base_worst, (double) sum / hard, worst,
            name);

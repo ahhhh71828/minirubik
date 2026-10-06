@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Build the RV32I program for one input state and run it on Ripes.
-#   [VARIANT=A0|A3] rv32/run.sh STATE [EXPECTED_LENGTH] [PROC]
-# VARIANT selects the search: A0 (default, ida.h) or A3 (ida_perimeter.h).
+#   [VARIANT=A0|A3T|A3D|A3B] rv32/run.sh STATE [EXPECTED_LENGTH] [PROC]
+# VARIANT selects the search: A0 (default, ida.h) or an A3 variant of
+# ida_perimeter.h (A3 is accepted as A3T, the stored-tail version).
 # Prints the program output and the retired-instruction count.
 # Build products go to rv32/build/ (ignored by Git).
 set -euo pipefail
@@ -13,7 +14,9 @@ state=$1 expect=${2:-} proc=${3:-RV32_ISS}
 variant=${VARIANT:-A0}
 case $variant in
 A0) extra= ;;
-A3) extra=-DPERIMETER ;;
+A3 | A3T) variant=A3T extra="-DPERIMETER -DPERIMETER_TAIL" ;;
+A3D) extra=-DPERIMETER ;;
+A3B) extra="-DPERIMETER -DPERIMETER_BUCKET" ;;
 *) echo "unknown VARIANT $variant" >&2; exit 2 ;;
 esac
 

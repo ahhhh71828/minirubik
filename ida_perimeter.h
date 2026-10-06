@@ -1,35 +1,55 @@
-/* A3 search core: A0's IDA* plus a perimeter of every state within
- * PERIMETER_RADIUS moves of solved.
+/* A3 search core: A0's IDA* with a perimeter of every state within
+ * PERIMETER_RADIUS moves of solved used as an exact heuristic.
  *
  * Shared by the host driver (ida.c) and the RV32I build (rv32/main.c).
  * Include tables.h, perimeter.h, and ida.h first. No heap, no recursion,
  * no division: freestanding code for the target.
  *
+ * Three variants, one factor changed at a time:
+ *   A3T  -DPERIMETER_TAIL    sorted entries, binary search; a hit within
+ *                            the bound appends the stored moves to solved
+ *   A3D  (default)           sorted entries, binary search; distances only,
+ *                            IDA* searches on to solved
+ *   A3B  -DPERIMETER_BUCKET  per-permutation buckets, linear scan;
+ *                            distances only, IDA* searches on to solved
+ *
  * Heuristic: if A0's lower bound h exceeds the radius, the state cannot be
  * in the perimeter and h stands. Otherwise look it up. Inside, the stored
  * distance is exact; outside, every state within the radius is listed, so
- * the true distance is at least PERIMETER_RADIUS + 1. Neither case
- * overestimates.
- *
- * Termination: when a child passes g + h <= bound and is in the perimeter,
- * the stored moves walk it to solved in exactly h steps, so the whole path
- * has length g + h <= bound and the pass can stop there.
+ * the true distance is at least PERIMETER_RADIUS + 1, which here is also
+ * max(h, PERIMETER_RADIUS + 1). Neither case overestimates.
  */
 #ifndef IDA_PERIMETER_H
 #define IDA_PERIMETER_H
 
 #include <stdint.h>
 
+#if defined(PERIMETER_TAIL) && defined(PERIMETER_BUCKET)
+#error "the stored tail needs the sorted layout, which holds the moves"
+#endif
+
 #define PERIMETER_MISS 0xFFFFFFFFu
 
-static inline uint32_t perimeter_key(uint16_t p, uint16_t o)
+#ifdef PERIMETER_BUCKET
+/* Scan the bucket of permutation rank p, ori ascending. Returns the entry
+ * [ori:10][distance:3] or MISS.
+ */
+static uint32_t perimeter_find(uint16_t p, uint16_t o)
 {
-    return (uint32_t) p * 729U + o; /* the upstream state rank */
+    for (uint16_t i = perimeter_offset[p]; i < perimeter_offset[p + 1]; ++i) {
+        uint16_t entry = perimeter_entry[i];
+        if ((entry >> 3) >= o)
+            return (entry >> 3) == o ? entry : PERIMETER_MISS;
+    }
+    return PERIMETER_MISS;
 }
-
-/* Binary search over entries sorted by key; returns the entry or MISS. */
-static uint32_t perimeter_find(uint32_t key)
+#else
+/* Binary search over entries sorted by rank p * 729 + o. Returns the entry
+ * [rank:22][move:4][distance:3] or MISS.
+ */
+static uint32_t perimeter_find(uint16_t p, uint16_t o)
 {
+    uint32_t key = (uint32_t) p * 729U + o;
     uint32_t lo = 0, hi = PERIMETER_SIZE;
     while (lo < hi) {
         uint32_t mid = (lo + hi) >> 1;
@@ -42,6 +62,7 @@ static uint32_t perimeter_find(uint32_t key)
                ? perimeter[lo]
                : PERIMETER_MISS;
 }
+#endif
 
 static uint8_t perimeter_h(uint16_t p, uint16_t o, uint32_t *entry)
 {
@@ -49,11 +70,12 @@ static uint8_t perimeter_h(uint16_t p, uint16_t o, uint32_t *entry)
     *entry = PERIMETER_MISS;
     if (h > PERIMETER_RADIUS)
         return h;
-    *entry = perimeter_find(perimeter_key(p, o));
+    *entry = perimeter_find(p, o);
     return *entry == PERIMETER_MISS ? (uint8_t) (PERIMETER_RADIUS + 1)
                                     : (uint8_t) (*entry & 7U);
 }
 
+#ifdef PERIMETER_TAIL
 /* Append the stored path from a perimeter state to solved. Each step must
  * land on a perimeter entry one closer; anything else returns NOT_FOUND,
  * which the host gates report as a failure.
@@ -76,15 +98,19 @@ static uint8_t perimeter_tail(uint16_t p, uint16_t o, uint32_t entry,
             p = perm_turn[face][p];
             o = ori_turn[face][o];
         }
-        entry = perimeter_find(perimeter_key(p, o));
+        entry = perimeter_find(p, o);
         if (entry == PERIMETER_MISS || (entry & 7U) != d - 1U)
             return NOT_FOUND;
     }
     return p == 0 && o == 0 ? depth : NOT_FOUND;
 }
+#endif
 
-/* A0's pass with perimeter_h in place of ida_h and a stored tail as the
- * goal. Same frames, same move order, same same-face rule.
+/* A0's pass with perimeter_h in place of ida_h. Same frames, same move
+ * order, same same-face rule. Without the stored tail the goal test is
+ * A0's: h == 0 only at solved. Inside the perimeter h is exact, so only a
+ * child one step closer passes g + h <= bound and the pass walks straight
+ * down to solved.
  */
 static uint8_t perimeter_pass(uint16_t p0, uint16_t o0, uint8_t bound,
                               uint8_t *moves, ida_stats_t *stats)
@@ -121,9 +147,14 @@ static uint8_t perimeter_pass(uint16_t p0, uint16_t o0, uint8_t bound,
             uint8_t h = perimeter_h(p, o, &entry);
             if (depth + 1U + h <= bound) {
                 moves[depth] = (uint8_t) (f * 3U + turns[depth]);
+#ifdef PERIMETER_TAIL
                 if (entry != PERIMETER_MISS)
                     return perimeter_tail(p, o, entry, (uint8_t) (depth + 1U),
                                           moves);
+#else
+                if (h == 0)
+                    return (uint8_t) (depth + 1U);
+#endif
                 ++depth;
                 ++stats->expanded;
                 node_p[depth] = child_p[depth] = p;
@@ -148,8 +179,13 @@ static uint8_t perimeter_solve(uint16_t p, uint16_t o, uint8_t *moves,
 {
     uint32_t entry;
     uint8_t bound = perimeter_h(p, o, &entry);
+#ifdef PERIMETER_TAIL
     if (entry != PERIMETER_MISS)
         return perimeter_tail(p, o, entry, 0, moves);
+#else
+    if (bound == 0)
+        return 0;
+#endif
     for (; bound <= MAX_DEPTH; ++bound) {
         uint8_t length = perimeter_pass(p, o, bound, moves, stats);
         if (length != NOT_FOUND)

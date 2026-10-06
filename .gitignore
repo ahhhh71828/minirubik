@@ -8,4 +8,6 @@ mini
 /tables.h
 /perimeter.h
 /ida
+/ida_a3d
+/ida_a3b
 /rv32/build/
