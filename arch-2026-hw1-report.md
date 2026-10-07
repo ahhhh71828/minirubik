@@ -371,14 +371,16 @@ child:
 | v0 (eager) | A3B's algorithm by hand; lookup whenever $h_0 \le r$ | 2,466,956 | | 893,520 | 1,148 |
 | v1 | look up only with at most $r$ moves left | 2,312,468 | 798,701 | 838,622 | 1,148 |
 | v2a | v1 with the lookup inlined | 2,154,801 | 745,162 | 781,691 | 1,200 |
-| v2b | v2a with byte-offset tables | **1,939,773** | **672,088** | **703,904** | **1,160** |
+| v2b | v2a with byte-offset tables | 1,939,773 | 672,088 | 703,904 | 1,160 |
+| v3 | v2b with the permutation rank unrolled | **1,939,690** | **672,005** | **703,821** | **1,232** |
 
 Every version is reproducible from the final source through switches:
-* v1 is `-DINDEX_TABLES -DCALL_LOOKUP`.
-* v2a is `-DINDEX_TABLES`.
+* v2b is `-DLOOP_RANK`.
+* v2a is `-DLOOP_RANK -DINDEX_TABLES`.
+* v1 is `-DLOOP_RANK -DINDEX_TABLES -DCALL_LOOKUP`.
 * v0 adds `-DEAGER_LOOKUP` to v1.
 
-v1, v2a, and v2b each passed the in-program check on all 2,644 distance-11 states, and the independent verifier confirmed all 2,644 printed paths for each.
+v1, v2a, v2b, and v3 each passed the in-program check on all 2,644 distance-11 states, and the independent verifier confirmed all 2,644 printed paths for each.
 
 **v0 → v1, the same shortcut that failed in C.** In assembly, the moves left are already in `a6`, so the test costs two instructions (`li`, `bgeu`) and saves 6.3% on the worst state. In C, the same test lost 3.3%, because the count had to be rebuilt from `bound` and `depth` for every child. The algorithm is identical; what differs is that hand-written code can keep the count in a register for the whole search, which GCC did not.
 
@@ -386,16 +388,19 @@ v1, v2a, and v2b each passed the in-program check on all 2,644 distance-11 state
 
 **v2a → v2b, byte offsets.** Pre-scaled ranks remove two `slli` per child and three per lookup, at the cost of 5,769 bytes of wider pattern databases. Static data is 81,216 bytes, 62% of the budget.
 
+**v2b → v3, unrolled permutation rank.** [TODO: my own paragraph — what changed, why, what I measured (83 fewer instructions on every one of the 2,644 states; 542 → 459 on the solved state), and the code-size trade-off (`.text` 1,160 → 1,232 bytes).] Static data is 81,220 bytes.
+
 ### 5.4 Against the compiled C
 
-| | GCC A3BX | asm v2b | asm ÷ GCC |
+| | GCC A3BX | asm v3 | asm ÷ GCC |
 | :--- | ---: | ---: | ---: |
-| Worst distance-11 state | 4,068,454 | 1,939,773 | 0.477 |
-| Mean over 2,644 states | 1,398,474 | 672,088 | 0.481 |
-| `21345671111111` | 1,478,449 | 703,904 | 0.476 |
+| Worst distance-11 state | 4,068,454 | 1,939,690 | 0.477 |
+| Mean over 2,644 states | 1,398,474 | 672,005 | 0.481 |
+| `21345671111111` | 1,478,449 | 703,821 | 0.476 |
+| `12345671111111` (solved) | 475 | 459 | 0.966 |
 | Per-state ratio, range | | | 0.471 to 0.511 |
 | States where the assembly is not faster | | | 0 |
-| `.text` | 1,744 bytes | 1,160 bytes | 0.665 |
+| `.text` | 1,744 bytes | 1,232 bytes | 0.706 |
 
 The comparison is fair in algorithm and data: A3BX uses the same tables and the same byte-offset layout. A3BX looks up eagerly because that is faster for the compiled C; the lazy variant A3FX measured 4,294,714 on the worst state. The worst query uses 3.9% of the $5 \times 10^7$ budget.
 
@@ -405,9 +410,9 @@ The assembly wins in four places:
 * The lookup is skipped when it cannot prune and is inlined when it can.
 * Row pointers step by addition instead of two-dimensional indexing.
 
-The one place the assembly does not win is the solved state: 542 against 475 retired instructions. Parsing and ranking run once per query, and they are written as plain loops. The rank's varying radix is applied by repeated addition. That costs a few dozen instructions on every query, under 0.01% of a hard one.
+The assembly is faster on every input measured, including the solved state, which v2b lost to GCC (542 against 475) before v3.
 
-As a fallback that needs no perimeter, the same source built with `-DHEURISTIC_A0` solves the worst state in 14,694,457 instructions and the reference in 5,374,645, with 1,024 bytes of `.text`. That is 38% of the compiled A0.
+As a fallback that needs no perimeter, the same source built with `-DHEURISTIC_A0` solves the worst state in 14,694,374 instructions and the reference in 5,374,562, with 1,096 bytes of `.text`. That is 38% of the compiled A0.
 
 ### 5.5 Tests inside the program
 
@@ -420,19 +425,19 @@ It then prints `OK length n` or `FAIL length n`.
 
 | Test | Length | Retired (`RV32_ISS`) |
 | :--- | ---: | ---: |
-| `12345671111111` (solved) | 0 | 542 |
-| `25346712313322` (`R B`) | 2 | 866 |
-| `62345713133111` | 8 | 5,969 |
-| `21345671111111` (distance 11) | 11 | 703,904 |
-| `54721631111111` (hardest for every variant) | 11 | 1,939,773 |
+| `12345671111111` (solved) | 0 | 459 |
+| `25346712313322` (`R B`) | 2 | 783 |
+| `62345713133111` | 8 | 5,886 |
+| `21345671111111` (distance 11) | 11 | 703,821 |
+| `54721631111111` (hardest for every variant) | 11 | 1,939,690 |
 
 The same three tests on the five-stage pipeline model `RV32_5S` print the same moves and `OK`:
 
 | Test | `RV32_ISS` | `RV32_5S` |
 | :--- | ---: | ---: |
-| `12345671111111` | 542 | 541 |
-| `25346712313322` | 866 | 865 |
-| `21345671111111` | 703,904 | 703,903 |
+| `12345671111111` | 459 | 458 |
+| `25346712313322` | 783 | 782 |
+| `21345671111111` | 703,821 | 703,820 |
 
 The pipelined count is one lower in every case because the final exit `ecall` is still in flight when the simulation stops; it never reaches write-back.
 
