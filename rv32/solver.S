@@ -67,9 +67,11 @@ frames:
 input:
     .string STATE
 digits:
-    .zero 8                     /* permutation digits of the input */
+    .zero 7                     /* permutation digits of the input */
+counts:
+    .zero 6                     /* counts[0..5] for the permutation rank */
 moves:
-    .zero 12                    /* solution, move = face * 3 + turns */
+    .zero 11                    /* solution, move = face * 3 + turns */
 names:                          /* 4 bytes per move name */
     .byte 82, 0, 0, 0,  82, 50, 0, 0,  82, 39, 0, 0
     .byte 66, 0, 0, 0,  66, 50, 0, 0,  66, 39, 0, 0
@@ -173,6 +175,7 @@ parse_next:
     bnez t5, invalid
     bnez t4, invalid            # twist sum must be 0 modulo 3
 
+#ifdef LOOP_RANK
 /* ---- Permutation rank, as rank_state() in solver.c ---------------------
  * r = r * (7 - i) + (number of later digits smaller than digit i).
  * The multiplier changes with i, so it is repeated addition: this runs
@@ -204,6 +207,61 @@ rank_scale:
     addi t0, t0, 1
     addi t2, t2, -1
     bnez t2, rank_digit
+#else
+/* ---- Permutation rank (asm v3) ----------------------------------------
+ * Part A: counts[i] = how many digits after digits[i] are smaller, for
+ * i = 0..5. The last digit has nothing after it, so its count is always 0
+ * and is not stored.
+ * Part B: r = counts[0], then r = r * k + counts[i] for k = 6, 5, 4, 3, 2,
+ * each constant multiply written as shifts and adds: no loop, no multiply.
+ * Runs once per query, never in the search.
+ */
+    la   t0, digits             # t0 = &digits[i], i = 0
+    addi t2, t0, 6              # outer stop: digits + 6, so i = 0..5
+    addi t6, t0, 7              # inner stop: digits + 7, so j reaches 6
+    la   t3, counts             # t3 = &counts[i]
+count_digit:
+    lbu  t5, 0(t0)              # cur = digits[i]
+    addi t1, t0, 1              # t1 = &digits[j], j = i + 1
+    li   a5, 0                  # count = 0
+count_later:
+    bgeu t1, t6, count_stored   # j = 7: nothing left to compare
+    lbu  a1, 0(t1)              # a1 = digits[j]
+    sltu a1, a1, t5             # a1 = 1 if digits[j] < cur, else 0
+    add  a5, a5, a1             # count += a1, no branch needed
+    addi t1, t1, 1              # j++
+    j    count_later
+count_stored:
+    sb   a5, 0(t3)              # counts[i] = count
+    addi t0, t0, 1              # i++ on the digits side
+    addi t3, t3, 1              # i++ on the counts side
+    bltu t0, t2, count_digit    # i < 6: next digit
+
+/* Part B: r = counts[0], then r = r * k + counts[i] for k = 6, 5, 4, 3, 2.
+ * Each multiply by a constant is shifts and adds: slli by k multiplies by
+ * 2 to the power k. */
+    la   t3, counts             # t3 = &counts[0], A left it at counts + 6
+    lbu  a2, 0(t3)              # r = counts[0]
+    slli t0, a2, 1              # t0 = 2r
+    add  t0, t0, a2             # t0 = 3r
+    slli a2, t0, 1              # r = 6r, as 3r * 2
+    lbu  a5, 1(t3)
+    add  a2, a2, a5             # r = 6r + counts[1]
+    slli t0, a2, 2              # t0 = 4r
+    add  a2, t0, a2             # r = 5r, as 4r + r
+    lbu  a5, 2(t3)
+    add  a2, a2, a5             # r = 5r + counts[2]
+    slli a2, a2, 2              # r = 4r
+    lbu  a5, 3(t3)
+    add  a2, a2, a5             # r = 4r + counts[3]
+    slli t0, a2, 1              # t0 = 2r
+    add  a2, a2, t0             # r = 3r, as r + 2r
+    lbu  a5, 4(t3)
+    add  a2, a2, a5             # r = 3r + counts[4]
+    slli a2, a2, 1              # r = 2r
+    lbu  a5, 5(t3)
+    add  a2, a2, a5             # r = 2r + counts[5], the permutation rank
+#endif
 #ifdef INDEX_TABLES
     mv   gp, a2                 # root permutation rank
     mv   tp, a3                 # root orientation rank
