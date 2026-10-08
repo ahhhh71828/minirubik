@@ -13,3 +13,16 @@ mini
 /ida_a3b
 /ida_a3f
 /rv32/build/
+
+# Local drafts and superseded screenshots, not part of the submission
+/v3.S
+/rv32/pipeline-v1/
+/rv32/pipeline-v2/
+
+/rv32/pipeline-v1/
+
+/rv32/pipeline-v2/
+
+/rv32/pipeline-v3/*
+
+!/rv32/pipeline-v3/fig*-crop.png

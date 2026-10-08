@@ -10,7 +10,7 @@ Contributed by ahhhh71828 · Fork: [ahhhh71828/minirubik](https://github.com/ahh
 | Retired instructions | `--iret` on the Ripes build above, same input, renderer compiled out |
 | Code size | bytes of linked `.text`, renderer compiled out (defined now, reported from stage 4) |
 
-> Status: this revision covers the state-space model and stages 1 to 4, including the LED matrix renderer. The pipeline walkthrough and the final cross-model checks follow in the next revision.
+> Status: this revision covers the state-space model, stages 1 to 4, cross-model checks, LED rendering, and the pipeline walkthrough, with cropped figures below.
 
 ## 1. The State Space
 
@@ -144,7 +144,7 @@ I keep the search state as a pair of ranks, the permutation rank $p \in [0, 5040
 
 Three consequences follow from this choice.
 
-* No ranking during search. The state is never expanded back into `p[7]` and `o[7]`. Ranking happens once, when the input string is parsed, and there the radices are constants (720, 120, …, 3), so every multiply becomes shifts and adds.
+* No ranking during search. The state is never expanded back into `p[7]` and `o[7]`. Ranking happens once, when the input string is parsed. The permutation rank uses factorial weights (720, 120, 24, 6, 2, 1). The final v3 assembly evaluates the same rank with successive multipliers 6, 5, 4, 3, and 2, implemented with shifts and adds.
 * No modulo 3 during search. All orientation arithmetic happened on the host when `ori_turn` was built; the search only indexes a table.
 * No nine-move tables. `R2` is `R` applied to the `R` child, and `R'` is `R` applied to the `R2` child, so the three children of one face cost one load each from the quarter-turn table. Storing all nine moves instead would take $(5040 + 729) \times 9 \times 2 = 103{,}842$ bytes for no saving in loads.
 
@@ -226,7 +226,7 @@ The depth-11 search tree has 653,034,700 nodes even after same-face pruning. The
 
 ### 3.7 Target measurement with the compiled C
 
-Before writing assembly I compiled the same `ida.h` for the target, to measure the design and to obtain the reference that stage 4 must beat. [`rv32/main.c`](https://github.com/ahhhh71828/minirubik/blob/main/rv32/main.c) parses the state inlined at compile time, solves it, prints the moves through ecalls, and checks the result itself: it replays the path through the transition tables, requires the solved state, and compares the length with the expected one. [`rv32/crt0.S`](https://github.com/ahhhh71828/minirubik/blob/main/rv32/crt0.S) sets `gp` and `sp` and calls `main`. The build is
+The target C reference compiles the same `ida.h` to measure the design and provide the comparison for stage 4. [`rv32/main.c`](https://github.com/ahhhh71828/minirubik/blob/main/rv32/main.c) parses the state inlined at compile time, solves it, prints the moves through ecalls, and checks the result itself: it replays the path through the transition tables, requires the solved state, and compares the length with the expected one. [`rv32/crt0.S`](https://github.com/ahhhh71828/minirubik/blob/main/rv32/crt0.S) sets `gp` and `sp` and calls `main`. The build is
 
 ```
 riscv64-elf-gcc -O2 -march=rv32i -mabi=ilp32 -ffreestanding -nostdlib -static
@@ -294,7 +294,9 @@ Mean $h$ rises from 5.144 to 6.005, and the worst distance-11 query drops from 6
 
 **A0 → A3T.** Eleven times fewer children but only 3.7 times fewer instructions. Each child now costs 181 instructions instead of 60, and the difference is the lookup: a binary search over 12,224 entries takes about 14 probes, each an address computation, a load, a shift, and a branch. Fewer children had moved the bottleneck into the table.
 
-**A3T → A3D.** Without stored moves, a child inside the perimeter with $g + d \le$ bound has exactly one kind of child that survives, one step closer, so the pass walks straight down to solved. The host count rises by only 11 children (0.02%), and the target cost by 0.3%: dropping the stored tail costs almost nothing. An earlier build of A3T, before the variants shared one lookup interface, measured 8% faster than A3D. The algorithm was the same, so that gap came from how the old interface compiled, not from search work, and I report the current build.
+**A3T → A3D.** Without stored moves, IDA* searches through the perimeter to solved. Let $D$ be the root's shortest solution length. In the first successful pass, the bound is $B = D$. For a node inside the perimeter, let $g$ be the prefix length and $d$ its exact remaining distance. The prefix followed by a shortest tail is a solution, so $g + d \ge D$. Passing the bound check also requires $g + d \le B$, hence $g + d = B$. A surviving successor must therefore reduce the exact distance by one: $(g + 1) + d' \le B$ requires $d' \le d - 1$, while a single move cannot reduce distance by more than one. There may be several such moves; only distance-reducing moves can survive. This equality argument applies to the successful pass, not to an arbitrary larger bound.
+
+The host count rises by only 11 children (0.02%), and the target cost by 0.3%: dropping the stored tail costs almost nothing. An earlier build of A3T, before the variants shared one lookup interface, measured 8% faster than A3D. The detailed instruction-level cause of that earlier gap was not checked; the figures here use the current build.
 
 **A3D → A3B.** Bucketing replaces the binary search:
 * `perimeter_offset[p]` (5,041 halfwords) marks where the bucket of permutation rank $p$ starts in `perimeter_entry`.
@@ -323,7 +325,7 @@ The perimeter shrinks from 48,896 to 34,530 bytes, and the cost per child falls 
 
 [`rv32/solver.S`](https://github.com/ahhhh71828/minirubik/blob/main/rv32/solver.S) is assembly written directly against the RV32I base ISA, not compiler output. Ripes' built-in assembler does not support `.if` or `.rodata`, so the assemble-time switches are C-preprocessor `#if`, resolved by `riscv64-elf-gcc -E -P -x assembler-with-cpp`. Ripes then assembles the result itself (`-t asm`); [`rv32/asm.sh`](https://github.com/ahhhh71828/minirubik/blob/main/rv32/asm.sh) wraps both steps.
 
-The source uses only the subset both Ripes and GNU as accept, so the same preprocessed text also links with GNU as (`-Wl,--no-relax`) to measure section sizes. Both builds retire exactly the same number of instructions on every input I compared, so their pseudo-instruction expansions agree. The tables come from [`gen_tables.c`](https://github.com/ahhhh71828/minirubik/blob/main/gen_tables.c) as `.half` data. All halfword tables come first in `.data`, so no alignment directive is needed.
+The source uses only the subset both Ripes and GNU as accept, so the same preprocessed text also links with GNU as (`-Wl,--no-relax`) to measure section sizes. Both builds retire exactly the same number of instructions on the compared inputs. The tables come from [`gen_tables.c`](https://github.com/ahhhh71828/minirubik/blob/main/gen_tables.c) as `.half` data. All halfword tables come first in `.data`, so no alignment directive is needed.
 
 * **Retired instructions:** `--iret` on `RV32_ISS`, renderer compiled out, same input.
 * **Code size:** linked `.text` bytes with the renderer compiled out.
@@ -388,7 +390,13 @@ v1, v2a, v2b, and v3 each passed the in-program check on all 2,644 distance-11 s
 
 **v2a → v2b, byte offsets.** Pre-scaled ranks remove two `slli` per child and three per lookup, at the cost of 5,769 bytes of wider pattern databases. Static data is 81,216 bytes, 62% of the budget.
 
-**v2b → v3, unrolled permutation rank.** [TODO: my own paragraph — what changed, why, what I measured (83 fewer instructions on every one of the 2,644 states; 542 → 459 on the solved state), and the code-size trade-off (`.text` 1,160 → 1,232 bytes).] Static data is 81,220 bytes.
+**v2b → v3, unrolled permutation rank.** The old ranking code computed each smaller-digit count and then multiplied the running rank by repeated addition. Each addition also needed a counter update and a loop branch. This included an initial multiplication of zero and a final multiplication by one, both unnecessary.
+
+v3 separates the work into two parts. Part A keeps a loop to compute `counts[0..5]`: each entry counts how many later digits are smaller than the current digit. The seventh digit has no later digits, so its count is always zero and does not need to be stored. Part B starts with `r = counts[0]`, then evaluates `r = r * k + counts[i]` with the fixed multipliers 6, 5, 4, 3, and 2. Because these constants are known, the code uses short shift-and-add sequences instead of a repeated-addition loop: for example, `5r = (r << 2) + r` and `6r = ((r << 1) + r) << 1`. No `mul` instruction is needed, and the result is the same permutation rank.
+
+All 2,644 distance-11 tests passed, and every state used exactly 83 fewer retired instructions than v2b. The reference dropped from 703,904 to 703,821, the worst state from 1,939,773 to 1,939,690, and the solved state from 542 to 459. This is a fixed saving during input ranking, which runs once per query; the search loop is unchanged.
+
+The cost is 72 more bytes of `.text`, from 1,160 to 1,232 bytes. That is a small increase for removing the repeated-addition loops and making even the solved case beat GCC's 475 instructions. The final code is still smaller than GCC A3BX's 1,744 bytes. Static data is 81,220 bytes, within the 128 KiB budget. The gain on a long search is small, but the change improves startup with a clear, measured cost.
 
 ### 5.4 Against the compiled C
 
@@ -398,7 +406,7 @@ v1, v2a, v2b, and v3 each passed the in-program check on all 2,644 distance-11 s
 | Mean over 2,644 states | 1,398,474 | 672,005 | 0.481 |
 | `21345671111111` | 1,478,449 | 703,821 | 0.476 |
 | `12345671111111` (solved) | 475 | 459 | 0.966 |
-| Per-state ratio, range | | | 0.471 to 0.511 |
+| Per-state ratio, range over 2,644 distance-11 states | | | 0.471 to 0.511 |
 | States where the assembly is not faster | | | 0 |
 | `.text` | 1,744 bytes | 1,232 bytes | 0.706 |
 
@@ -439,9 +447,89 @@ The same three tests on the five-stage pipeline model `RV32_5S` print the same m
 | `25346712313322` | 783 | 782 |
 | `21345671111111` | 703,821 | 703,820 |
 
-The pipelined count is one lower in every case because the final exit `ecall` is still in flight when the simulation stops; it never reaches write-back.
+The five-stage retired instruction count is one lower than the `RV32_ISS` count in each of these three tests. Both models print the same solution and `OK`.
 
-> Pending for the next revision: the pipeline walkthrough.
+![Figure 01: short test passes on the five-stage processor](https://raw.githubusercontent.com/ahhhh71828/minirubik/main/rv32/pipeline-v3/fig01-pipeline-short-test-pass-crop.png)
+
+*Figure 01. Cropped console and execution information for `25346712313322`, with `RENDER=0`. The output is `B' R'`, `OK length 2`, and exit code 0. The five-stage processor shows 1,048 cycles and 782 retired instructions.*
+
+### 5.6 Pipeline walkthrough
+
+Figures 02 to 09 show asm v3 on the five-stage processor (`RV32_5S`), with M and C extensions disabled, Extended layout, and signals visible. The input is `25346712313322`, with `RENDER=0`. Each figure is a rectangular crop of one original screenshot. The original screenshots are retained in `rv32/pipeline-v3/`.
+
+The three examples connect the search code to the hardware: a load updates the permutation coordinate, a branch rejects a state that cannot fit the bound, and a store saves part of the current frame before descending. Instructions overlap in the pipeline, so each explanation follows one instruction by its PC and stage. A memory signal seen in the same cycle may belong to a different instruction.
+
+The cycle positions recorded for the two memory instructions are:
+
+| Instruction | PC | IF | ID | EX | MEM | WB |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: |
+| `lhu a2,0(t0)` | `0x1f8` | 610 | 611 | 612 | 613 | 614 |
+| `sw s9,0(s7)` | `0x25c` | 770 | 771 | 772 | 773 | 774 |
+
+#### Load: address, memory read, and write-back
+
+The transition lookup uses this pair:
+
+```asm
+add t0, s9, a2
+lhu a2, 0(t0)
+```
+
+`s9` points to the current face's transition row. `a2` already holds a byte offset, so the address needs one addition. In this example, `0x100001a0 + 0x8b2 = 0x10000a52`.
+
+IF fetches the load at PC `0x1f8` in cycle 610. ID decodes it in cycle 611: the base register is x5 (`t0`), the destination is x12 (`a2`), and the immediate is 0. In EX at cycle 612, the forwarding mux supplies the address produced by the preceding `add`; the load does not need to wait for that addition to write back. The ALU adds 0 and passes the address to MEM.
+
+In MEM at cycle 613, the processor reads an unsigned halfword from `0x10000a52`. Memory write enable is 0, so this instruction does not change the table. The result is zero-extended to `0x00001ab2`. In WB at cycle 614, the mux selects the memory result and register write enable is 1. The value is written to `a2`, which now holds the next permutation coordinate. With the byte-offset layout, `0x1ab2` is 6,834, or rank 3,417 multiplied by 2.
+
+![Figure 02: lhu address calculation in EX at cycle 612](https://raw.githubusercontent.com/ahhhh71828/minirubik/main/rv32/pipeline-v3/fig02-lhu-ex-cycle612-crop.png)
+
+*Figure 02. Cropped pipeline diagram at cycle 612. `lhu a2,0(t0)` is in EX. The forwarded address is `0x10000a52`; the ALU adds the immediate 0.*
+
+![Figure 03: lhu memory read in MEM at cycle 613](https://raw.githubusercontent.com/ahhhh71828/minirubik/main/rv32/pipeline-v3/fig03-lhu-mem-cycle613-crop.png)
+
+*Figure 03. Cropped pipeline diagram at cycle 613. The load is in MEM. Data memory shows address `0x10000a52`, write enable 0, and read output `0x00001ab2`.*
+
+![Figure 04: lhu memory result selected for write-back at cycle 614](https://raw.githubusercontent.com/ahhhh71828/minirubik/main/rv32/pipeline-v3/fig04-lhu-wb-cycle614-crop.png)
+
+*Figure 04. Cropped pipeline diagram at cycle 614. The load is in WB. The write-back mux selects the memory result `0x00001ab2`; register write enable is 1 and the destination is x12 (`a2`).*
+
+#### Taken branch and flush
+
+The pruning instruction is `bltu a6,t0,next`. Here `a6` is the number of moves left after the candidate move, and `t0` is its heuristic value. The values are 1 and 3. Since the heuristic is a lower bound, a state needing at least 3 more moves cannot fit in 1 move; execution must continue at `next` instead of descending.
+
+The branch enters IF at cycle 622 and ID at cycle 623. In EX at cycle 624, the unsigned comparison is true. The target calculation is `0x220 + 0x94 = 0x2b4`, and the next-PC mux selects that target.
+
+The processor had already fetched instructions from the fall-through path. At cycle 625, the target instruction is in IF, while ID and EX show `nop (flush)`. These two bubbles replace the instructions at `0x224` and `0x228`, preventing the rejected path from changing the search state. The branch itself does not write a register or data memory.
+
+![Figure 05: bltu takes the branch in EX at cycle 624](https://raw.githubusercontent.com/ahhhh71828/minirubik/main/rv32/pipeline-v3/fig05-bltu-taken-cycle624-crop.png)
+
+*Figure 05. Cropped pipeline diagram at cycle 624. `bltu a6,t0,next` at PC `0x220` is in EX. The operands are 1 and 3, branch taken is 1, and the target is `0x2b4`.*
+
+![Figure 06: two flushed pipeline stages at cycle 625](https://raw.githubusercontent.com/ahhhh71828/minirubik/main/rv32/pipeline-v3/fig06-branch-flush-cycle625-crop.png)
+
+*Figure 06. Cropped pipeline diagram at cycle 625. The target instruction is in IF. ID and EX both show `nop (flush)`.*
+
+#### Store: before and after the memory write
+
+Before descending, `sw s9,0(s7)` saves the current transition-row pointer in the frame. `s7` is the frame address, `0x10000020`, and `s9` contains the pointer `0x10002900`. Backtracking later reads this field with `lw s9,0(s7)`, restoring the row used at that depth.
+
+IF fetches the store at PC `0x25c` in cycle 770. ID reads x23 (`s7`) as the base and x25 (`s9`) as the store data in cycle 771. In EX at cycle 772, the ALU adds the immediate 0 to the base. The address and store data then travel to MEM together.
+
+At cycle 773, MEM shows address `0x10000020`, data input `0x10002900`, and write enable 1. The memory view still shows the old word before the clock edge. After the edge, cycle 774 shows the new word `0x10002900`. The bytes are `00 29 00 10`, matching little-endian storage. The address, value, and four-byte width all match the intended frame field.
+
+The store passes through WB with register write disabled: its result is the memory update, not a new register value. In cycle 774, the MEM signals already belong to the next store, `sw s10,4(s7)`, so they must not be read as signals for the first store.
+
+![Figure 07: sw address calculation and memory before the write at cycle 772](https://raw.githubusercontent.com/ahhhh71828/minirubik/main/rv32/pipeline-v3/fig07-sw-ex-memory-before-cycle772-crop.png)
+
+*Figure 07. Cropped pipeline and memory view at cycle 772. `sw s9,0(s7)` is in EX. Its address is `0x10000020` and its store data is `0x10002900`. The word at that address is still zero.*
+
+![Figure 08: sw memory write signals at cycle 773](https://raw.githubusercontent.com/ahhhh71828/minirubik/main/rv32/pipeline-v3/fig08-sw-mem-write-enable-cycle773-crop.png)
+
+*Figure 08. Cropped pipeline and memory view at cycle 773. The store is in MEM. Data memory shows address `0x10000020`, data input `0x10002900`, and write enable 1. The memory view still shows zero before the next clock edge.*
+
+![Figure 09: memory word updated after sw at cycle 774](https://raw.githubusercontent.com/ahhhh71828/minirubik/main/rv32/pipeline-v3/fig09-sw-memory-after-cycle774-crop.png)
+
+*Figure 09. Cropped pipeline and memory view at cycle 774. The word at `0x10000020` is now `0x10002900`, with bytes `00 29 00 10`. The first store is in WB; the MEM signals now belong to the next store, `sw s10,4(s7)`.*
 
 ## 6. LED Matrix Rendering
 
@@ -463,14 +551,42 @@ A sticker's colour is looked up from the cubie's three home faces, rotated by it
 
 At the end, the renderer requires its own corner arrays to be solved, a second check independent of the rank replay. On the GUI build of `21345671111111`, Ripes plays the initial state and each of the 11 moves, ends on six uniform faces, and prints `OK length 11`.
 
-## AI Usage Disclosure
+### 6.1 LED playback figures
 
-> Partial disclosure, in progress. The items below are complete and accurate for what they cover; the remaining components will be added in a later revision, before submission.
+Figures 10 to 13 show the v3 GUI build on the single-cycle RV32I processor, with `RENDER=1` and the 35-by-25 LED matrix. The first three figures crop the LED display; the last crops the console and execution information. The original screenshots are retained in `rv32/pipeline-v3/`.
+
+Figure 10 is the initial state. Figure 11 shows the state after the first returned move, `R`, and Figure 12 shows six uniform faces after all 11 moves. The renderer applies the entries in the solver's `moves[]` in order, so the frames follow the returned solution. Figure 13 shows the final self-check. The three display snapshots illustrate playback; they do not by themselves establish optimality, which is checked separately by the gates above.
+
+![Figure 10: LED display of the initial scrambled cube](https://raw.githubusercontent.com/ahhhh71828/minirubik/main/rv32/pipeline-v3/fig10-led-initial-state-crop.png)
+
+*Figure 10. Cropped LED display before playback, for input `21345671111111`.*
+
+![Figure 11: LED display after the first move R](https://raw.githubusercontent.com/ahhhh71828/minirubik/main/rv32/pipeline-v3/fig11-led-after-first-move-r-crop.png)
+
+*Figure 11. Cropped LED display after the first move, `R`. The facelets have changed from Figure 10.*
+
+![Figure 12: LED display of the solved cube after 11 moves](https://raw.githubusercontent.com/ahhhh71828/minirubik/main/rv32/pipeline-v3/fig12-led-solved-six-faces-crop.png)
+
+*Figure 12. Cropped LED display after all 11 moves. Each of the six faces has one colour.*
+
+![Figure 13: LED build prints the solution and passes its self-check](https://raw.githubusercontent.com/ahhhh71828/minirubik/main/rv32/pipeline-v3/fig13-led-solution-console-pass-crop.png)
+
+*Figure 13. Cropped console and execution information after LED playback. The lower output is the 11-move solution, followed by `OK length 11` and exit code 0. The upper `OK length 2` is retained output from an earlier short test. The counts in this image include rendering and delay loops; they are not the `RENDER=0` search benchmark.*
+
+## AI Usage Disclosure
 
 Tools: Claude Code (Claude) and Codex.
 
+### What AI did
+
 * **Understanding the material.** Explanations of the assignment text, the baseline `solver.c` and `report.md`, and background on heuristic search (IDA*, pattern databases, admissibility), including Chinese study notes that walk through code line by line.
 * **Literature search.** Locating and summarizing papers and open-source solvers on pattern databases, perimeter search, move pruning, and transposition tables, and flagging which ideas do not apply to the R/B/D cube.
+* **Code.**
+  * The C implementation: `ida.h`, `ida_perimeter.h`, `gen_tables.c`, and the target reference `rv32/main.c` with `rv32/crt0.S`.
+  * The stage-1 harnesses `stage1/rate.S` and `stage1/mem.S`.
+  * `rv32/solver.S` from asm v0 to v2b, including the search loop, the inline perimeter lookup, and the byte-offset layout. Claude wrote these versions.
+  * The LED renderer in `rv32/solver.S`. Codex wrote it.
+  * Claude suggested unrolling the permutation rank as a further optimization.
 * **Toolchain and environment.**
   * Verifying the pinned Ripes build and its CLI.
   * Finding that Ripes' built-in assembler rejects `.if`, `.rodata`, and arithmetic immediates, and setting up the C-preprocessor workaround.
@@ -480,7 +596,18 @@ Tools: Claude Code (Claude) and Codex.
   * `verify.c`, an independent shortest-path checker built on the upstream BFS.
   * The host gate driver's checks (H1, H2/H4, H3).
   * The scripts that automate builds and runs: `stage1/run.sh`, `rv32/run.sh`, `rv32/asm.sh`, and `rv32/sweep.sh`.
-
-  Every measurement reported in this note was produced by my own runs of these tools.
 * **Debugging.** Diagnosing failures during development, such as an off-by-one in face skipping found by a sweep, and shell quoting problems in the measurement scripts.
-* **Writing.** Refining the English of this note.
+* **Writing.** Claude wrote first drafts of sections 1 to 6 from my measurements and refined the English of this note. I reviewed and corrected the drafts against my own runs, and rewrote parts in my own words, listed below.
+
+### What I did
+
+* **Method.** I surveyed the literature first, then discussed the options with Claude and Codex, which also helped me find papers. I compared the options and chose the perimeter design.
+* **Decisions.**
+  * The perimeter design (A3 family) instead of the larger pattern database (A1).
+  * Keeping A3F as a negative result for the compiled C, and using the lazy lookup only in assembly.
+  * Spending 5,769 bytes on byte-offset tables for about 6% fewer instructions.
+  * Leaving the frame layout unchanged, and trimming the `digits` and `moves` buffers.
+* **asm v3.** I wrote the v3 code, debugged it, and measured it myself.
+* **Measurements.** Every measurement reported in this note was produced by my own runs.
+* **Pipeline walkthrough and LED figures.** I observed the GUI, took the screenshots, and wrote sections 5.6 and 6.1.
+* **Review and rewriting.** I checked every claim against my own runs, corrected several, and rewrote in my own words the v2b → v3 paragraph, the A3T → A3D argument, and the wording in sections 3.2, 3.7, 5.1, 5.4, and 5.5.

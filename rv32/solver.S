@@ -1,4 +1,4 @@
-/* minirubik A3B solver, hand-written RV32I assembly (asm v2b).
+/* minirubik A3B solver, hand-written RV32I assembly (asm v3).
  *
  * Search: IDA* over (permutation rank, orientation rank). Heuristic:
  * h0 = max(perm_pdb[p], ori_pdb[o]); when h0 <= PERIMETER_RADIUS the
@@ -8,6 +8,7 @@
  * does, instead of only when few moves are left (measurement switch).
  * -DCALL_LOOKUP keeps the asm v1 subroutine call for the in-search lookup.
  * -DINDEX_TABLES keeps plain ranks in the tables (asm v1, v2a).
+ * -DLOOP_RANK keeps the loop permutation rank (asm v0 to v2b).
  *
  * Build: preprocess with the C preprocessor, then assemble with Ripes
  * (-t asm) or GNU as. The source uses only what both assemblers accept;
@@ -35,7 +36,7 @@
 #define STATE "21345671111111"
 #endif
 
-/* Table layout. Default (asm v2b): every rank is kept pre-scaled by 2, the
+/* Table layout. Default (asm v2b and v3): every rank is kept pre-scaled by 2, the
  * byte offset of its halfword entry, so a lookup is add + load with no
  * shift; the pattern databases are widened to halfwords so the same scaled
  * rank indexes them. -DINDEX_TABLES restores plain ranks (asm v1, v2a). */
@@ -176,7 +177,7 @@ parse_next:
     bnez t4, invalid            # twist sum must be 0 modulo 3
 
 #ifdef LOOP_RANK
-/* ---- Permutation rank, as rank_state() in solver.c ---------------------
+/* ---- Permutation rank (asm v0 to v2b), as rank_state() in solver.c ----
  * r = r * (7 - i) + (number of later digits smaller than digit i).
  * The multiplier changes with i, so it is repeated addition: this runs
  * once per query, never in the search.
@@ -355,7 +356,7 @@ child_h:
     jal  ra, perimeter_lookup
     bltu a6, t0, next           # exact distance, or radius + 1: prune
 #else
-    /* asm v2: the bucket scan inline. Here at most PERIMETER_RADIUS moves
+    /* asm v2a: the bucket scan inline. Here at most PERIMETER_RADIUS moves
      * are left, so an absent state (h = radius + 1) always prunes, and a
      * larger ori gives entry - (o << 3) >= 8, which prunes the same way:
      * one comparison covers hit, miss, and overshoot. */
