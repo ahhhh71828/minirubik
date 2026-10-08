@@ -10,7 +10,7 @@ Contributed by ahhhh71828 · Fork: [ahhhh71828/minirubik](https://github.com/ahh
 | Retired instructions | `--iret` on the Ripes build above, same input, renderer compiled out |
 | Code size | bytes of linked `.text`, renderer compiled out (defined now, reported from stage 4) |
 
-> Status: this revision covers the state-space model, stages 1 to 4, cross-model checks, LED rendering, and the pipeline walkthrough, with cropped figures below.
+> Status: this revision covers the state-space model, stages 1 to 4, cross-model checks, LED rendering, and the pipeline walkthrough.
 
 ## 1. The State Space
 
@@ -451,11 +451,11 @@ The five-stage retired instruction count is one lower than the `RV32_ISS` count 
 
 ![Figure 01: short test passes on the five-stage processor](https://raw.githubusercontent.com/ahhhh71828/minirubik/main/rv32/pipeline-v3/fig01-pipeline-short-test-pass-crop.png)
 
-*Figure 01. Cropped console and execution information for `25346712313322`, with `RENDER=0`. The output is `B' R'`, `OK length 2`, and exit code 0. The five-stage processor shows 1,048 cycles and 782 retired instructions.*
+*Figure 01. Console and execution information for `25346712313322`, with `RENDER=0`. The output is `B' R'`, `OK length 2`, and exit code 0. The five-stage processor shows 1,048 cycles and 782 retired instructions.*
 
 ### 5.6 Pipeline walkthrough
 
-Figures 02 to 09 show asm v3 on the five-stage processor (`RV32_5S`), with M and C extensions disabled, Extended layout, and signals visible. The input is `25346712313322`, with `RENDER=0`. Each figure is a rectangular crop of one original screenshot. The original screenshots are retained in `rv32/pipeline-v3/`.
+Figures 02 to 09 show asm v3 on the five-stage processor (`RV32_5S`), with M and C extensions disabled, Extended layout, and signals visible. The input is `25346712313322`, with `RENDER=0`.
 
 The three examples connect the search code to the hardware: a load updates the permutation coordinate, a branch rejects a state that cannot fit the bound, and a store saves part of the current frame before descending. Instructions overlap in the pipeline, so each explanation follows one instruction by its PC and stage. A memory signal seen in the same cycle may belong to a different instruction.
 
@@ -483,15 +483,15 @@ In MEM at cycle 613, the processor reads an unsigned halfword from `0x10000a52`.
 
 ![Figure 02: lhu address calculation in EX at cycle 612](https://raw.githubusercontent.com/ahhhh71828/minirubik/main/rv32/pipeline-v3/fig02-lhu-ex-cycle612-crop.png)
 
-*Figure 02. Cropped pipeline diagram at cycle 612. `lhu a2,0(t0)` is in EX. The forwarded address is `0x10000a52`; the ALU adds the immediate 0.*
+*Figure 02. Pipeline diagram at cycle 612. `lhu a2,0(t0)` is in EX. The forwarded address is `0x10000a52`; the ALU adds the immediate 0.*
 
 ![Figure 03: lhu memory read in MEM at cycle 613](https://raw.githubusercontent.com/ahhhh71828/minirubik/main/rv32/pipeline-v3/fig03-lhu-mem-cycle613-crop.png)
 
-*Figure 03. Cropped pipeline diagram at cycle 613. The load is in MEM. Data memory shows address `0x10000a52`, write enable 0, and read output `0x00001ab2`.*
+*Figure 03. Pipeline diagram at cycle 613. The load is in MEM. Data memory shows address `0x10000a52`, write enable 0, and read output `0x00001ab2`.*
 
 ![Figure 04: lhu memory result selected for write-back at cycle 614](https://raw.githubusercontent.com/ahhhh71828/minirubik/main/rv32/pipeline-v3/fig04-lhu-wb-cycle614-crop.png)
 
-*Figure 04. Cropped pipeline diagram at cycle 614. The load is in WB. The write-back mux selects the memory result `0x00001ab2`; register write enable is 1 and the destination is x12 (`a2`).*
+*Figure 04. Pipeline diagram at cycle 614. The load is in WB. The write-back mux selects the memory result `0x00001ab2`; register write enable is 1 and the destination is x12 (`a2`).*
 
 #### Taken branch and flush
 
@@ -503,11 +503,11 @@ The processor had already fetched instructions from the fall-through path. At cy
 
 ![Figure 05: bltu takes the branch in EX at cycle 624](https://raw.githubusercontent.com/ahhhh71828/minirubik/main/rv32/pipeline-v3/fig05-bltu-taken-cycle624-crop.png)
 
-*Figure 05. Cropped pipeline diagram at cycle 624. `bltu a6,t0,next` at PC `0x220` is in EX. The operands are 1 and 3, branch taken is 1, and the target is `0x2b4`.*
+*Figure 05. Pipeline diagram at cycle 624. `bltu a6,t0,next` at PC `0x220` is in EX. The operands are 1 and 3, branch taken is 1, and the target is `0x2b4`.*
 
 ![Figure 06: two flushed pipeline stages at cycle 625](https://raw.githubusercontent.com/ahhhh71828/minirubik/main/rv32/pipeline-v3/fig06-branch-flush-cycle625-crop.png)
 
-*Figure 06. Cropped pipeline diagram at cycle 625. The target instruction is in IF. ID and EX both show `nop (flush)`.*
+*Figure 06. Pipeline diagram at cycle 625. The target instruction is in IF. ID and EX both show `nop (flush)`.*
 
 #### Store: before and after the memory write
 
@@ -521,15 +521,15 @@ The store passes through WB with register write disabled: its result is the memo
 
 ![Figure 07: sw address calculation and memory before the write at cycle 772](https://raw.githubusercontent.com/ahhhh71828/minirubik/main/rv32/pipeline-v3/fig07-sw-ex-memory-before-cycle772-crop.png)
 
-*Figure 07. Cropped pipeline and memory view at cycle 772. `sw s9,0(s7)` is in EX. Its address is `0x10000020` and its store data is `0x10002900`. The word at that address is still zero.*
+*Figure 07. Pipeline and memory view at cycle 772. `sw s9,0(s7)` is in EX. Its address is `0x10000020` and its store data is `0x10002900`. The word at that address is still zero.*
 
 ![Figure 08: sw memory write signals at cycle 773](https://raw.githubusercontent.com/ahhhh71828/minirubik/main/rv32/pipeline-v3/fig08-sw-mem-write-enable-cycle773-crop.png)
 
-*Figure 08. Cropped pipeline and memory view at cycle 773. The store is in MEM. Data memory shows address `0x10000020`, data input `0x10002900`, and write enable 1. The memory view still shows zero before the next clock edge.*
+*Figure 08. Pipeline and memory view at cycle 773. The store is in MEM. Data memory shows address `0x10000020`, data input `0x10002900`, and write enable 1. The memory view still shows zero before the next clock edge.*
 
 ![Figure 09: memory word updated after sw at cycle 774](https://raw.githubusercontent.com/ahhhh71828/minirubik/main/rv32/pipeline-v3/fig09-sw-memory-after-cycle774-crop.png)
 
-*Figure 09. Cropped pipeline and memory view at cycle 774. The word at `0x10000020` is now `0x10002900`, with bytes `00 29 00 10`. The first store is in WB; the MEM signals now belong to the next store, `sw s10,4(s7)`.*
+*Figure 09. Pipeline and memory view at cycle 774. The word at `0x10000020` is now `0x10002900`, with bytes `00 29 00 10`. The first store is in WB; the MEM signals now belong to the next store, `sw s10,4(s7)`.*
 
 ## 6. LED Matrix Rendering
 
@@ -553,25 +553,25 @@ At the end, the renderer requires its own corner arrays to be solved, a second c
 
 ### 6.1 LED playback figures
 
-Figures 10 to 13 show the v3 GUI build on the single-cycle RV32I processor, with `RENDER=1` and the 35-by-25 LED matrix. The first three figures crop the LED display; the last crops the console and execution information. The original screenshots are retained in `rv32/pipeline-v3/`.
+Figures 10 to 13 show the v3 GUI build on the single-cycle RV32I processor, with `RENDER=1` and the 35-by-25 LED matrix. The first three figures show the LED display; the last shows the console and execution information.
 
 Figure 10 is the initial state. Figure 11 shows the state after the first returned move, `R`, and Figure 12 shows six uniform faces after all 11 moves. The renderer applies the entries in the solver's `moves[]` in order, so the frames follow the returned solution. Figure 13 shows the final self-check. The three display snapshots illustrate playback; they do not by themselves establish optimality, which is checked separately by the gates above.
 
 ![Figure 10: LED display of the initial scrambled cube](https://raw.githubusercontent.com/ahhhh71828/minirubik/main/rv32/pipeline-v3/fig10-led-initial-state-crop.png)
 
-*Figure 10. Cropped LED display before playback, for input `21345671111111`.*
+*Figure 10. LED display before playback, for input `21345671111111`.*
 
 ![Figure 11: LED display after the first move R](https://raw.githubusercontent.com/ahhhh71828/minirubik/main/rv32/pipeline-v3/fig11-led-after-first-move-r-crop.png)
 
-*Figure 11. Cropped LED display after the first move, `R`. The facelets have changed from Figure 10.*
+*Figure 11. LED display after the first move, `R`. The facelets have changed from Figure 10.*
 
 ![Figure 12: LED display of the solved cube after 11 moves](https://raw.githubusercontent.com/ahhhh71828/minirubik/main/rv32/pipeline-v3/fig12-led-solved-six-faces-crop.png)
 
-*Figure 12. Cropped LED display after all 11 moves. Each of the six faces has one colour.*
+*Figure 12. LED display after all 11 moves. Each of the six faces has one colour.*
 
 ![Figure 13: LED build prints the solution and passes its self-check](https://raw.githubusercontent.com/ahhhh71828/minirubik/main/rv32/pipeline-v3/fig13-led-solution-console-pass-crop.png)
 
-*Figure 13. Cropped console and execution information after LED playback. The lower output is the 11-move solution, followed by `OK length 11` and exit code 0. The upper `OK length 2` is retained output from an earlier short test. The counts in this image include rendering and delay loops; they are not the `RENDER=0` search benchmark.*
+*Figure 13. Console and execution information after LED playback. The lower output is the 11-move solution, followed by `OK length 11` and exit code 0. The upper `OK length 2` is retained output from an earlier short test. The counts in this image include rendering and delay loops; they are not the `RENDER=0` search benchmark.*
 
 ## AI Usage Disclosure
 
