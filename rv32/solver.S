@@ -1,4 +1,4 @@
-/* minirubik A3B solver, hand-written RV32I assembly (asm v3).
+/* minirubik A3B solver, hand-written RV32I assembly (asm v4).
  *
  * Search: IDA* over (permutation rank, orientation rank). Heuristic:
  * h0 = max(perm_pdb[p], ori_pdb[o]); when h0 <= PERIMETER_RADIUS the
@@ -9,6 +9,8 @@
  * -DCALL_LOOKUP keeps the asm v1 subroutine call for the in-search lookup.
  * -DINDEX_TABLES keeps plain ranks in the tables (asm v1, v2a).
  * -DLOOP_RANK keeps the loop permutation rank (asm v0 to v2b).
+ * These switches restore only those parts; the asm v4 changes to next_face
+ * and the frame have no switch, so v0 to v3 exactly are commit 22755c6.
  *
  * Build: preprocess with the C preprocessor, then assemble with Ripes
  * (-t asm) or GNU as. The source uses only what both assemblers accept;
@@ -29,8 +31,9 @@
  *   a6  moves left within the bound below the child: bound - (depth + 1)
  *   a7  face that led to this node (3 at the root)
  *   gp  root perm rank   tp  root ori rank
- * Frame: 0 s9, 4 s10, 8 node p, 10 node o, 12 child p, 14 child o,
- *        16 face, 17 turns. The sentinel frame before depth 0 has face 3.
+ * Frame: 0 s9, 4 s10, 8 node p, 10 node o, 16 face, 17 turns (12 to 15
+ * unused since asm v4: the child descended into is the next depth's node,
+ * still in a4/a5 at backtrack). The sentinel frame before depth 0 has face 3.
  */
 #ifndef STATE
 #define STATE "21345671111111"
@@ -393,8 +396,6 @@ descend:
     sw   s10, 4(s7)
     sh   a4, 8(s7)
     sh   a5, 10(s7)
-    sh   a2, 12(s7)
-    sh   a3, 14(s7)
     sb   a0, 16(s7)
     sb   a1, 17(s7)
     addi s7, s7, FRAME
@@ -417,14 +418,13 @@ descend:
  */
 next:
     addi a1, a1, 1
-    li   t0, 3
+    li   t0, 3                  # still 3 in next_face: nothing there writes t0
     bne  a1, t0, child
     li   a1, 0
 next_face:
     addi a0, a0, 1
     add  s9, s9, s11
     addi s10, s10, ORI_FACE_BYTES
-    li   t0, 3
     beq  a0, t0, backtrack      # test before the skip: the root sentinel is 3
     beq  a0, a7, next_face
     mv   a2, a4
@@ -435,12 +435,12 @@ backtrack:
     beq  s7, s8, pass_failed
     addi s7, s7, -FRAME
     addi a6, a6, 1
+    mv   a2, a4                 # the child descended into is the node just left
+    mv   a3, a5
     lw   s9, 0(s7)
     lw   s10, 4(s7)
     lhu  a4, 8(s7)
     lhu  a5, 10(s7)
-    lhu  a2, 12(s7)
-    lhu  a3, 14(s7)
     lbu  a0, 16(s7)
     lbu  a1, 17(s7)
     lbu  a7, -16(s7)            # face of the depth above (sentinel: 3)

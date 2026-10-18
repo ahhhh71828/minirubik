@@ -10,7 +10,7 @@ Contributed by ahhhh71828 · Fork: [ahhhh71828/minirubik](https://github.com/ahh
 | Retired instructions | `--iret` on the Ripes build above, same input, renderer compiled out |
 | Code size | bytes of linked `.text`, renderer compiled out (defined now, reported from stage 4) |
 
-> Status: this revision covers the state-space model, stages 1 to 4, cross-model checks, LED rendering, and the pipeline walkthrough.
+> Status: this revision covers the state-space model, stages 1 to 4, cross-model checks, LED rendering, and the pipeline walkthrough. It adds asm v4 (section 5.3), which Claude implemented and I measured; the pipeline and LED figures are still asm v3.
 
 ## 1. The State Space
 
@@ -144,7 +144,7 @@ I keep the search state as a pair of ranks, the permutation rank $p \in [0, 5040
 
 Three consequences follow from this choice.
 
-* No ranking during search. The state is never expanded back into `p[7]` and `o[7]`. Ranking happens once, when the input string is parsed. The permutation rank uses factorial weights (720, 120, 24, 6, 2, 1). The final v3 assembly evaluates the same rank with successive multipliers 6, 5, 4, 3, and 2, implemented with shifts and adds.
+* No ranking during search. The state is never expanded back into `p[7]` and `o[7]`. Ranking happens once, when the input string is parsed. The permutation rank uses factorial weights (720, 120, 24, 6, 2, 1). Since v3, the assembly evaluates the same rank with successive multipliers 6, 5, 4, 3, and 2, implemented with shifts and adds.
 * No modulo 3 during search. All orientation arithmetic happened on the host when `ori_turn` was built; the search only indexes a table.
 * No nine-move tables. `R2` is `R` applied to the `R` child, and `R'` is `R` applied to the `R2` child, so the three children of one face cost one load each from the quarter-turn table. Storing all nine moves instead would take $(5040 + 729) \times 9 \times 2 = 103{,}842$ bytes for no saving in loads.
 
@@ -346,7 +346,7 @@ The source uses only the subset both Ripes and GNU as accept, so the same prepro
 | `a7` | the face that led here |
 | `gp`, `tp` | the root |
 
-A 32-byte frame per depth, addressed by stepping `s7` by 32, holds only what backtracking needs: the two row pointers, the node, the child that was descended into, the face, and the turn count. It is written only on a descent. The search never records the path separately: on success it is copied out of the frames' face and turn counts into `moves[]`, which the output, the self-check, and the renderer read.
+A 32-byte frame per depth, addressed by stepping `s7` by 32, holds only what backtracking needs: the two row pointers, the node, the face, and the turn count. Up to v3 it also held the child that was descended into; v4 drops that copy (section 5.3). It is written only on a descent. The search never records the path separately: on success it is copied out of the frames' face and turn counts into `moves[]`, which the output, the self-check, and the renderer read.
 
 The child loop is four table loads and a maximum:
 
@@ -374,15 +374,18 @@ child:
 | v1 | look up only with at most $r$ moves left | 2,312,468 | 798,701 | 838,622 | 1,148 |
 | v2a | v1 with the lookup inlined | 2,154,801 | 745,162 | 781,691 | 1,200 |
 | v2b | v2a with byte-offset tables | 1,939,773 | 672,088 | 703,904 | 1,160 |
-| v3 | v2b with the permutation rank unrolled | **1,939,690** | **672,005** | **703,821** | **1,232** |
+| v3 | v2b with the permutation rank unrolled | 1,939,690 | 672,005 | 703,821 | 1,232 |
+| v4 | v3 without a repeated `li` and the frame's copy of the child (Claude) | **1,895,322** | **656,943** | **687,664** | **1,220** |
 
-Every version is reproducible from the final source through switches:
+v0 to v3 are reproducible through switches from the v3 source, commit [`22755c6`](https://github.com/ahhhh71828/minirubik/blob/22755c6/rv32/solver.S):
 * v2b is `-DLOOP_RANK`.
 * v2a is `-DLOOP_RANK -DINDEX_TABLES`.
 * v1 is `-DLOOP_RANK -DINDEX_TABLES -DCALL_LOOKUP`.
 * v0 adds `-DEAGER_LOOKUP` to v1.
 
-v1, v2a, v2b, and v3 each passed the in-program check on all 2,644 distance-11 states, and the independent verifier confirmed all 2,644 printed paths for each.
+The switches remain in the v4 source, but there they keep the v4 changes, which have no switch.
+
+v1, v2a, v2b, and v3 each passed the in-program check on all 2,644 distance-11 states, and the independent verifier confirmed all 2,644 printed paths for each. v4 passed the same two checks.
 
 **v0 → v1, the same shortcut that failed in C.** In assembly, the moves left are already in `a6`, so the test costs two instructions (`li`, `bgeu`) and saves 6.3% on the worst state. In C, the same test lost 3.3%, because the count had to be rebuilt from `bound` and `depth` for every child. The algorithm is identical; what differs is that hand-written code can keep the count in a register for the whole search, which GCC did not.
 
@@ -398,19 +401,55 @@ All 2,644 distance-11 tests passed, and every state used exactly 83 fewer retire
 
 The cost is 72 more bytes of `.text`, from 1,160 to 1,232 bytes. That is a small increase for removing the repeated-addition loops and making even the solved case beat GCC's 475 instructions. The final code is still smaller than GCC A3BX's 1,744 bytes. Static data is 81,220 bytes, within the 128 KiB budget. The gain on a long search is small, but the change improves startup with a clear, measured cost.
 
+**v3 → v4, repeated work in the sibling loop and the frame (implemented by Claude, measured by me).** The v4 code and its analysis are not my work. Codex proposed both changes in a static review of v3. Claude traced every path into the changed code and made the changes one at a time. I measured each step with a test driver Claude wrote. Both changes touch only register use and stores in the search loop; the algorithm, heuristic, tables, move order, output, and renderer are unchanged.
+
+*Change A, one `li` in `next_face`.* `next` sets `t0` to 3 to test whether the turn count `a1` has reached 3. When it has, execution falls through into `next_face`, which set `t0` to 3 again before testing whether the face `a0` has reached 3. `next_face` has only two entries: that fall-through, and its own branch back when it skips the face just used. Neither path writes `t0`, and every entry into `next` (the pruning branches and the jump at the end of `backtrack`) executes the first `li`. v4 deletes the second one, which saves one instruction each time `next_face` runs.
+
+*Change B, the child in the frame.* On a descent, v3 stored the node (`a4`, `a5`) and the accepted child (`a2`, `a3`) in the frame, then copied the child into `a4` and `a5` as the next depth's node; backtracking reloaded both pairs. But the child stored at depth $k$ is the node of depth $k + 1$, and `a4` and `a5` hold the current depth's node for as long as that depth is searched: only a descent overwrites them, after saving them, and only a backtrack restores them. Child generation, the inline lookup, `perimeter_lookup`, `next`, and `next_face` never write them. When backtracking leaves depth $k + 1$, `a4` and `a5` therefore still hold what v3 reloaded from offsets 12 and 14. v4 removes the two `sh` from `descend`, and in `backtrack` replaces the two `lhu` with `mv a2, a4` and `mv a3, a5`, placed before `a4` and `a5` are reloaded from offsets 8 and 10.
+
+Claude checked the paths this could break:
+* **Consecutive backtracks.** Each backtrack leaves the restored node in `a4` and `a5`. That node is the child the depth above descended into, which is what the next backtrack needs.
+* **Face changes and the same-face skip.** They read `a4` and `a5` but never write them.
+* **A failed pass.** Backtracking at depth 0 branches to `pass_failed` before restoring anything, and `pass` reinitializes all four registers.
+* **A found solution.** `copy_move` reads only the face and turn bytes at offsets 16 and 17.
+
+Nothing reads offsets 12 to 15 any more. The frame layout and its 32-byte size are unchanged, so those four bytes of each frame are now unused.
+
+Each change was measured before the next was added:
+
+| Build | `12345671111111` | `25346712313322` | `62345713133111` | `21345671111111` | `54721631111111` | `.text` |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| v3 | 459 | 783 | 5,886 | 703,821 | 1,939,690 | 1,232 |
+| v3 + A | 459 | 782 | 5,822 | 694,602 | 1,914,372 | 1,228 |
+| v4 = v3 + A + B | 459 | 780 | 5,770 | 687,664 | 1,895,322 | 1,220 |
+
+These are retired instructions on `RV32_ISS` with the renderer compiled out and the expected length given, using the same Ripes build, preprocessing flags, and inputs as for v3. For every input, all three builds printed the same moves and `OK`, and the independent verifier accepted each path.
+
+For the full comparison, I ran each version's sweep twice with the same driver. Both v3 runs matched my earlier v3 sweep on every state, and the two v4 runs matched each other. On all 2,644 distance-11 states, v4 prints the same moves as v3, every state passes the in-program check, and the independent verifier confirms all 2,644 paths. Every state is cheaper, by 12,800 to 44,368 instructions. The worst state is still `54721631111111`, 2.29% lower at 1,895,322. The mean is 2.24% lower at 656,943, and the reference 2.30% lower at 687,664.
+
+On the reference, A saves 9,219 instructions and B saves 6,938. Since A removes one instruction per run of `next_face` and B two per descent, these correspond to 9,219 runs of `next_face` and 3,469 descents; the counts are inferred from the differences, not counted separately.
+
+On the five-stage model `RV32_5S`, the reference takes 883,346 cycles in v4 against 899,503 in v3, and the worst state 2,431,881 against 2,476,249. In both, the cycle saving equals the instruction saving, 16,157 and 44,368. So the two loads that B turns into moves gave no measurable cycle change on this model. Ripes' models have no cache here, and fewer memory accesses are not a measured gain by themselves; what B saves is the two stores per descent.
+
+Wall-clock time is listed separately and is not a measured gain. In single runs, Ripes reported a model execution time (`--exectime`) for the reference of 25 ms (v3) and 22 ms (v4) on `RV32_ISS`, and 1,243 ms (v3) against 1,212 ms (v4) on `RV32_5S`. The full sweep runs eight Ripes processes on the host, including preprocessing and assembly. The two v3 runs took 111.6 s and 103.1 s, and the two v4 runs 107.3 s and 108.9 s. The two v3 runs differ by more than any v3 run differs from a v4 run, so these runs show no wall-clock difference between the versions.
+
+Code size falls by 12 bytes of `.text`, from 1,232 to 1,220, and static data is unchanged at 81,220 bytes, all in `.data`. The build is still RV32I only: no M or C instructions and no undefined symbols, so no compiler helper. The cost is two assumptions that the code now relies on without checking: A needs `t0` to still hold 3 from `next`, and B needs `a4` and `a5` to hold the node for the whole depth. A later edit that writes `t0` before `next_face`, adds another entry to it, or writes `a4` or `a5` within a depth would break the search without any build error. Comments at both places in the source record these assumptions.
+
+v4 changes only register and control-flow code, so the host gates H1 to H4 were not re-run: they cover the heuristic, the tables, and the C search, none of which changed. The GCC reference is unchanged. No v4 candidate was rejected. Three further ideas came up during the review and were not tried: keeping the constant 3 in a register, a smaller frame, and reordering loads to avoid five-stage stalls.
+
 ### 5.4 Against the compiled C
 
-| | GCC A3BX | asm v3 | asm ÷ GCC |
-| :--- | ---: | ---: | ---: |
-| Worst distance-11 state | 4,068,454 | 1,939,690 | 0.477 |
-| Mean over 2,644 states | 1,398,474 | 672,005 | 0.481 |
-| `21345671111111` | 1,478,449 | 703,821 | 0.476 |
-| `12345671111111` (solved) | 475 | 459 | 0.966 |
-| Per-state ratio, range over 2,644 distance-11 states | | | 0.471 to 0.511 |
-| States where the assembly is not faster | | | 0 |
-| `.text` | 1,744 bytes | 1,232 bytes | 0.706 |
+| | GCC A3BX | asm v3 | v3 ÷ GCC | asm v4 | v4 ÷ GCC |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| Worst distance-11 state | 4,068,454 | 1,939,690 | 0.477 | 1,895,322 | 0.466 |
+| Mean over 2,644 states | 1,398,474 | 672,005 | 0.481 | 656,943 | 0.470 |
+| `21345671111111` | 1,478,449 | 703,821 | 0.476 | 687,664 | 0.465 |
+| `12345671111111` (solved) | 475 | 459 | 0.966 | 459 | 0.966 |
+| Per-state ratio, range over 2,644 distance-11 states | | | 0.471 to 0.511 | | 0.460 to 0.502 |
+| States where the assembly is not faster | | | 0 | | 0 |
+| `.text` | 1,744 bytes | 1,232 bytes | 0.706 | 1,220 bytes | 0.700 |
 
-The comparison is fair in algorithm and data: A3BX uses the same tables and the same byte-offset layout. A3BX looks up eagerly because that is faster for the compiled C; the lazy variant A3FX measured 4,294,714 on the worst state. The worst query uses 3.9% of the $5 \times 10^7$ budget.
+The GCC column is the same A3BX sweep as before. The comparison is fair in algorithm and data: A3BX uses the same tables and the same byte-offset layout. A3BX looks up eagerly because that is faster for the compiled C; the lazy variant A3FX measured 4,294,714 on the worst state. The worst query uses 3.9% of the $5 \times 10^7$ budget in v3 and 3.8% in v4.
 
 The assembly wins in four places:
 * The current depth stays in registers, while the compiled C writes each child to its frame arrays.
@@ -420,7 +459,7 @@ The assembly wins in four places:
 
 The assembly is faster on every input measured, including the solved state, which v2b lost to GCC (542 against 475) before v3.
 
-As a fallback that needs no perimeter, the same source built with `-DHEURISTIC_A0` solves the worst state in 14,694,374 instructions and the reference in 5,374,562, with 1,096 bytes of `.text`. That is 38% of the compiled A0.
+As a fallback that needs no perimeter, the v3 source built with `-DHEURISTIC_A0` solves the worst state in 14,694,374 instructions and the reference in 5,374,562, with 1,096 bytes of `.text`. That is 38% of the compiled A0. With the same switch, the v4 source takes 14,196,672 and 5,192,682, with 1,084 bytes.
 
 ### 5.5 Tests inside the program
 
@@ -431,31 +470,33 @@ The input is the 14-character string inlined at assembly time. After solving, th
 
 It then prints `OK length n` or `FAIL length n`.
 
-| Test | Length | Retired (`RV32_ISS`) |
-| :--- | ---: | ---: |
-| `12345671111111` (solved) | 0 | 459 |
-| `25346712313322` (`R B`) | 2 | 783 |
-| `62345713133111` | 8 | 5,886 |
-| `21345671111111` (distance 11) | 11 | 703,821 |
-| `54721631111111` (hardest for every variant) | 11 | 1,939,690 |
+| Test | Length | v3 retired (`RV32_ISS`) | v4 retired (`RV32_ISS`) |
+| :--- | ---: | ---: | ---: |
+| `12345671111111` (solved) | 0 | 459 | 459 |
+| `25346712313322` (`R B`) | 2 | 783 | 780 |
+| `62345713133111` | 8 | 5,886 | 5,770 |
+| `21345671111111` (distance 11) | 11 | 703,821 | 687,664 |
+| `54721631111111` (hardest for every variant) | 11 | 1,939,690 | 1,895,322 |
 
 The same three tests on the five-stage pipeline model `RV32_5S` print the same moves and `OK`:
 
-| Test | `RV32_ISS` | `RV32_5S` |
-| :--- | ---: | ---: |
-| `12345671111111` | 459 | 458 |
-| `25346712313322` | 783 | 782 |
-| `21345671111111` | 703,821 | 703,820 |
+| Test | v3 `RV32_ISS` | v3 `RV32_5S` | v4 `RV32_ISS` | v4 `RV32_5S` |
+| :--- | ---: | ---: | ---: | ---: |
+| `12345671111111` | 459 | 458 | 459 | 458 |
+| `25346712313322` | 783 | 782 | 780 | 779 |
+| `21345671111111` | 703,821 | 703,820 | 687,664 | 687,663 |
 
-The five-stage retired instruction count is one lower than the `RV32_ISS` count in each of these three tests. Both models print the same solution and `OK`.
+The five-stage retired instruction count is one lower than the `RV32_ISS` count in each of these three tests, in both versions. Both models print the same solution and `OK`.
 
 ![Figure 01: short test passes on the five-stage processor](https://raw.githubusercontent.com/ahhhh71828/minirubik/main/rv32/pipeline-v3/fig01-pipeline-short-test-pass-crop.png)
 
-*Figure 01. Console and execution information for `25346712313322`, with `RENDER=0`. The output is `B' R'`, `OK length 2`, and exit code 0. The five-stage processor shows 1,048 cycles and 782 retired instructions.*
+*Figure 01. asm v3: console and execution information for `25346712313322`, with `RENDER=0`. The output is `B' R'`, `OK length 2`, and exit code 0. The five-stage processor shows 1,048 cycles and 782 retired instructions. For v4, the command line reports 1,045 cycles and 779 retired instructions; no v4 screenshot was taken.*
 
 ### 5.6 Pipeline walkthrough
 
 Figures 02 to 09 show asm v3 on the five-stage processor (`RV32_5S`), with M and C extensions disabled, Extended layout, and signals visible. The input is `25346712313322`, with `RENDER=0`.
+
+These figures are asm v3 evidence and were not re-recorded for v4. In v4, `lhu a2,0(t0)` and `sw s9,0(s7)` keep their PCs, `0x1f8` and `0x25c`, but `next` moves from `0x2b4` to `0x2ac`, so the branch below has offset `0x8c` instead of `0x94` and a different target. I probed the order on `RV32_ISS` by exiting at the first entry of each search label. The load and the branch run before any changed instruction. One `next_face` runs before the store, so v4 reaches the store one instruction earlier (instruction 586 instead of 587), and its cycle numbers should differ. None of the v4 cycles were checked in the GUI.
 
 The three examples connect the search code to the hardware: a load updates the permutation coordinate, a branch rejects a state that cannot fit the bound, and a store saves part of the current frame before descending. Instructions overlap in the pipeline, so each explanation follows one instruction by its PC and stage. A memory signal seen in the same cycle may belong to a different instruction.
 
@@ -553,7 +594,7 @@ At the end, the renderer requires its own corner arrays to be solved, a second c
 
 ### 6.1 LED playback figures
 
-Figures 10 to 13 show the v3 GUI build on the single-cycle RV32I processor, with `RENDER=1` and the 35-by-25 LED matrix. The first three figures show the LED display; the last shows the console and execution information.
+Figures 10 to 13 show the v3 GUI build on the single-cycle RV32I processor, with `RENDER=1` and the 35-by-25 LED matrix. The first three figures show the LED display; the last shows the console and execution information. v4 returns the same 11 moves for this input, so its playback should show the same frames, but no v4 GUI run has been recorded, and the counts in Figure 13 are v3's.
 
 Figure 10 is the initial state. Figure 11 shows the state after the first returned move, `R`, and Figure 12 shows six uniform faces after all 11 moves. The renderer applies the entries in the solver's `moves[]` in order, so the frames follow the returned solution. Figure 13 shows the final self-check. The three display snapshots illustrate playback; they do not by themselves establish optimality, which is checked separately by the gates above.
 
@@ -587,6 +628,8 @@ Tools: Claude Code (Claude) and Codex.
   * `rv32/solver.S` from asm v0 to v2b, including the search loop, the inline perimeter lookup, and the byte-offset layout. Claude wrote these versions.
   * The LED renderer in `rv32/solver.S`. Codex wrote it.
   * Claude suggested unrolling the permutation rank as a further optimization.
+  * asm v4 in `rv32/solver.S` (2026-10-17). Codex proposed both changes in a static review of v3. Claude traced them, implemented them, and wrote the v4 text in the status line and in sections 3.2 and 5.2 to 6.1.
+* **asm v4 test driver.** Claude wrote the Git-ignored scripts in `rv32/build/v4/` that I used to measure v4 (builds, sweeps, the per-state comparison, and the probe in section 5.6) and the commands to run them, and checked my outputs.
 * **Toolchain and environment.**
   * Verifying the pinned Ripes build and its CLI.
   * Finding that Ripes' built-in assembler rejects `.if`, `.rodata`, and arithmetic immediates, and setting up the C-preprocessor workaround.
@@ -608,6 +651,6 @@ Tools: Claude Code (Claude) and Codex.
   * Spending 5,769 bytes on byte-offset tables for about 6% fewer instructions.
   * Leaving the frame layout unchanged, and trimming the `digits` and `moves` buffers.
 * **asm v3.** I wrote the v3 code, debugged it, and measured it myself.
-* **Measurements.** Every measurement reported in this note was produced by my own runs.
+* **Measurements.** Every measurement reported in this note was produced by my own runs, including asm v4, which I measured with Claude's test driver.
 * **Pipeline walkthrough and LED figures.** I observed the GUI, took the screenshots, and wrote sections 5.6 and 6.1.
 * **Review and rewriting.** I checked every claim against my own runs, corrected several, and rewrote in my own words the v2b → v3 paragraph, the A3T → A3D argument, and the wording in sections 3.2, 3.7, 5.1, 5.4, and 5.5.
